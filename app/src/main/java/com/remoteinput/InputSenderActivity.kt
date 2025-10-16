@@ -9,6 +9,7 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.remoteinput.R // <-- 修复：添加 R 类导入
 import kotlinx.coroutines.*
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
@@ -151,11 +152,9 @@ class InputSenderActivity : AppCompatActivity() {
                 writer?.let { w ->
                     when {
                         currentText.isEmpty() && lastText.isNotEmpty() -> {
-                            // 清空了所有文本
                             w.println("CLEAR")
                         }
                         currentText.length < lastText.length -> {
-                            // 删除操作
                             val deleteCount = lastText.length - currentText.length
                             if (deleteCount == 1) {
                                 w.println("BACKSPACE")
@@ -164,7 +163,6 @@ class InputSenderActivity : AppCompatActivity() {
                             }
                         }
                         currentText.length > lastText.length -> {
-                            // 输入新字符
                             val newText = currentText.substring(lastText.length)
                             w.println("TEXT:$newText")
                         }

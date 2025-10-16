@@ -6,6 +6,7 @@ import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.TextView
+import com.remoteinput.R // <-- 修复：添加 R 类导入
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -51,14 +52,15 @@ class RemoteIME : InputMethodService() {
                 
                 updateStatus("等待连接...")
                 
-                while (isActive) {
+                // <-- 修复：明确使用 currentCoroutineContext().isActive
+                while (currentCoroutineContext().isActive) {
                     try {
                         val client = serverSocket?.accept() ?: break
                         currentClient?.close()
                         currentClient = client
                         handleClient(client)
                     } catch (e: Exception) {
-                        if (isActive) {
+                        if (currentCoroutineContext().isActive) {
                             e.printStackTrace()
                         }
                     }
@@ -76,7 +78,7 @@ class RemoteIME : InputMethodService() {
         try {
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), "UTF-8"))
             
-            while (isActive && !socket.isClosed) {
+            while (currentCoroutineContext().isActive && !socket.isClosed) {
                 val message = reader.readLine() ?: break
                 processMessage(message)
             }

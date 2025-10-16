@@ -4,12 +4,11 @@ package com.remoteinput
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
-import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import kotlinx.coroutines.*
+import com.remoteinput.R // <-- 修复：添加 R 类导入
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -73,7 +72,7 @@ class MainActivity : AppCompatActivity() {
                     val addr = addresses.nextElement()
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
                         val hostAddress = addr.hostAddress
-                        if (hostAddress != null && hostAddress.startsWith("192.168")) {
+                        if (hostAddress != null && (hostAddress.startsWith("192.168") || hostAddress.startsWith("10."))) {
                             return hostAddress
                         }
                     }
