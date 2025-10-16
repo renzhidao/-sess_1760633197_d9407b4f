@@ -4,43 +4,33 @@ package com.remoteinput
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
-import android.widget.Button
-import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.remoteinput.R // <-- 修复：添加 R 类导入
+import com.remoteinput.databinding.ActivityMainBinding // <-- 修复：导入 View Binding 类
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
 class MainActivity : AppCompatActivity() {
     
-    private lateinit var tvIpAddress: TextView
-    private lateinit var tvStatus: TextView
-    private lateinit var btnReceiver: Button
-    private lateinit var btnSender: Button
+    // 修复：使用 View Binding
+    private lateinit var binding: ActivityMainBinding
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        // 修复：通过 View Binding 设置布局
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
         
-        initViews()
         setupListeners()
         displayIpAddress()
     }
     
-    private fun initViews() {
-        tvIpAddress = findViewById(R.id.tvIpAddress)
-        tvStatus = findViewById(R.id.tvStatus)
-        btnReceiver = findViewById(R.id.btnReceiver)
-        btnSender = findViewById(R.id.btnSender)
-    }
-    
     private fun setupListeners() {
-        btnReceiver.setOnClickListener {
+        binding.btnReceiver.setOnClickListener {
             openInputMethodSettings()
         }
         
-        btnSender.setOnClickListener {
+        binding.btnSender.setOnClickListener {
             startActivity(Intent(this, InputSenderActivity::class.java))
         }
     }
@@ -57,7 +47,7 @@ class MainActivity : AppCompatActivity() {
     
     private fun displayIpAddress() {
         val ip = getLocalIpAddress()
-        tvIpAddress.text = "本机IP: $ip"
+        binding.tvIpAddress.text = getString(R.string.ip_address, ip)
     }
     
     private fun getLocalIpAddress(): String {

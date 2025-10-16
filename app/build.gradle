@@ -2,7 +2,8 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
-    id 'kotlin-parcelize' // <-- 添加 kotlin-parcelize 插件
+    id 'kotlin-parcelize'
+    id 'kotlin-kapt' // <-- 核心修复：添加 KAPT 插件
 }
 
 android {

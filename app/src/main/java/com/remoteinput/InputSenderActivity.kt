@@ -4,12 +4,9 @@ package com.remoteinput
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
-import android.widget.Button
-import android.widget.EditText
-import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.remoteinput.R // <-- 修复：添加 R 类导入
+import com.remoteinput.databinding.ActivityInputSenderBinding // <-- 修复：导入 View Binding 类
 import kotlinx.coroutines.*
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
@@ -18,10 +15,8 @@ import java.net.Socket
 
 class InputSenderActivity : AppCompatActivity() {
     
-    private lateinit var etServerIp: EditText
-    private lateinit var btnConnect: Button
-    private lateinit var tvConnectionStatus: TextView
-    private lateinit var etInput: EditText
+    // 修复：使用 View Binding
+    private lateinit var binding: ActivityInputSenderBinding
     
     private var socket: Socket? = null
     private var writer: PrintWriter? = null
@@ -38,21 +33,15 @@ class InputSenderActivity : AppCompatActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_input_sender)
+        // 修复：通过 View Binding 设置布局
+        binding = ActivityInputSenderBinding.inflate(layoutInflater)
+        setContentView(binding.root)
         
-        initViews()
         setupListeners()
     }
     
-    private fun initViews() {
-        etServerIp = findViewById(R.id.etServerIp)
-        btnConnect = findViewById(R.id.btnConnect)
-        tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
-        etInput = findViewById(R.id.etInput)
-    }
-    
     private fun setupListeners() {
-        btnConnect.setOnClickListener {
+        binding.btnConnect.setOnClickListener {
             if (isConnected) {
                 disconnect()
             } else {
@@ -60,7 +49,7 @@ class InputSenderActivity : AppCompatActivity() {
             }
         }
         
-        etInput.addTextChangedListener(object : TextWatcher {
+        binding.etInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             
@@ -73,7 +62,7 @@ class InputSenderActivity : AppCompatActivity() {
     }
     
     private fun connect() {
-        val ip = etServerIp.text.toString().trim()
+        val ip = binding.etServerIp.text.toString().trim()
         
         if (ip.isEmpty()) {
             Toast.makeText(this, "请输入IP地址", Toast.LENGTH_SHORT).show()
@@ -100,9 +89,9 @@ class InputSenderActivity : AppCompatActivity() {
                 isConnected = true
                 
                 withContext(Dispatchers.Main) {
-                    tvConnectionStatus.text = "已连接到: $ip"
-                    btnConnect.text = "断开连接"
-                    etInput.isEnabled = true
+                    binding.tvConnectionStatus.text = "已连接到: $ip"
+                    binding.btnConnect.text = getString(R.string.disconnect)
+                    binding.etInput.isEnabled = true
                     Toast.makeText(this@InputSenderActivity, "连接成功", Toast.LENGTH_SHORT).show()
                 }
                 
@@ -111,7 +100,7 @@ class InputSenderActivity : AppCompatActivity() {
                 isConnected = false
                 
                 withContext(Dispatchers.Main) {
-                    tvConnectionStatus.text = "连接失败"
+                    binding.tvConnectionStatus.text = getString(R.string.status_waiting)
                     Toast.makeText(
                         this@InputSenderActivity,
                         "连接失败: ${e.message}",
@@ -139,9 +128,9 @@ class InputSenderActivity : AppCompatActivity() {
             lastText = ""
             
             withContext(Dispatchers.Main) {
-                tvConnectionStatus.text = "未连接"
-                btnConnect.text = "连接"
-                etInput.isEnabled = true
+                binding.tvConnectionStatus.text = getString(R.string.status_waiting)
+                binding.btnConnect.text = getString(R.string.connect)
+                binding.etInput.isEnabled = true
             }
         }
     }
@@ -194,7 +183,7 @@ class InputSenderActivity : AppCompatActivity() {
     
     private suspend fun updateUI(status: String) {
         withContext(Dispatchers.Main) {
-            tvConnectionStatus.text = status
+            binding.tvConnectionStatus.text = status
         }
     }
     
