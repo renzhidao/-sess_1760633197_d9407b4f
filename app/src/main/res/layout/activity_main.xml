@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/layout/activity_main.xml -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:gravity="center_horizontal"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <TextView
+        android:id="@+id/tvIpAddress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="本机IP: 获取中..."
+        android:textSize="18sp"
+        android:layout_marginBottom="24dp" />
+
+    <Button
+        android:id="@+id/btnReceiver"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/mode_receiver"
+        android:layout_marginBottom="12dp" />
+
+    <Button
+        android:id="@+id/btnSender"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/mode_sender" />
+
+</LinearLayout>
