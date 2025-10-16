@@ -130,7 +130,6 @@ class InputSenderActivity : AppCompatActivity() {
                             tvConnectionStatus.text = "连接失败: ${e.message}"
                             Toast.makeText(this@InputSenderActivity, "连接失败: ${e.message}", Toast.LENGTH_LONG).show()
                         }
-                        // 失败也注销回调
                         safeUnregister(cm, cb)
                     }
                 }
@@ -155,9 +154,7 @@ class InputSenderActivity : AppCompatActivity() {
                 scope.launch {
                     delay(CONNECTION_TIMEOUT.toLong())
                     if (!isConnected) {
-                        withContext(Dispatchers.Main) {
-                            tvConnectionStatus.text = "连接超时"
-                        }
+                        withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接超时" }
                         safeUnregister(cm, cb)
                     }
                 }
@@ -168,12 +165,12 @@ class InputSenderActivity : AppCompatActivity() {
         }
     }
 
-    private fun safeUnregister(cm: ConnectivityManager, cb: ConnectivityManager.NetworkCallback?) {
+    private fun safeUnregister(cm: ConnectivityManager, callback: ConnectivityManager.NetworkCallback?) {
         try {
-            if (cb != null) cm.unregisterNetworkCallback(cb)
+            if (callback != null) cm.unregisterNetworkCallback(callback)
         } catch (_: Exception) {
         }
-        if (wifiCallback === cb) wifiCallback = null
+        if (wifiCallback === callback) wifiCallback = null
     }
 
     // —— NSD 自动发现 + 解析并连接 ——
@@ -184,7 +181,6 @@ class InputSenderActivity : AppCompatActivity() {
             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                 runOnUiThread { tvConnectionStatus.text = "解析失败: $errorCode" }
             }
-
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
                 val host = serviceInfo.host?.hostAddress ?: return
                 val port = serviceInfo.port
