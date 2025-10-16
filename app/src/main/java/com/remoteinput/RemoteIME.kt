@@ -92,7 +92,7 @@ class RemoteIME : InputMethodService() {
         try {
             nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, nsdRegListener)
         } catch (_: Exception) {
-            // 部分设备可能禁用 NSD，不影响核心功能
+            // 某些设备可能禁用 NSD，不影响核心功能
         }
     }
 

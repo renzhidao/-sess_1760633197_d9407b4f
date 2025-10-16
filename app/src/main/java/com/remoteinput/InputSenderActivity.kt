@@ -122,8 +122,13 @@ class InputSenderActivity : AppCompatActivity() {
                             btnConnect.text = "断开"
                             etInput.isEnabled = true
                         }
-                        // 连接成功后停止发现并注销回调
                         stopNsd()
+                        safeUnregisterCurrent(cm)
+                    } catch (e: SecurityException) {
+                        withContext(Dispatchers.Main) {
+                            tvConnectionStatus.text = "无权限（需 CHANGE_NETWORK_STATE）"
+                            Toast.makeText(this@InputSenderActivity, "缺少网络变更权限", Toast.LENGTH_LONG).show()
+                        }
                         safeUnregisterCurrent(cm)
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
@@ -145,12 +150,11 @@ class InputSenderActivity : AppCompatActivity() {
         }
 
         try {
-            wifiCallback?.let { cb ->
+            wifiCallback?.let { callback ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
+                    cm.requestNetwork(req, callback, CONNECTION_TIMEOUT)
                 } else {
-                    // API 24–25 用两参重载 + 手动超时
-                    cm.requestNetwork(req, cb)
+                    cm.requestNetwork(req, callback)
                     scope.launch {
                         delay(CONNECTION_TIMEOUT.toLong())
                         if (!isConnected) {
@@ -160,6 +164,9 @@ class InputSenderActivity : AppCompatActivity() {
                     }
                 }
             }
+        } catch (e: SecurityException) {
+            tvConnectionStatus.text = "请求 Wi‑Fi 失败: ${e.message}"
+            safeUnregisterCurrent(cm)
         } catch (e: Exception) {
             tvConnectionStatus.text = "请求 Wi‑Fi 失败: ${e.message}"
             safeUnregisterCurrent(cm)
