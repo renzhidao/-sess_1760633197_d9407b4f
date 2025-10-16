@@ -1,6 +1,7 @@
 // 文件: app/src/main/java/com/remoteinput/InputSenderActivity.kt
 package com.remoteinput
 
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -94,17 +95,20 @@ class InputSenderActivity : AppCompatActivity() {
     // —— 强制走 Wi‑Fi 的连接逻辑（绕过多数 VPN 路由） ——
     private fun connectViaWifi(ip: String, port: Int) {
         tvConnectionStatus.text = "连接中（Wi‑Fi）…"
+        val cm = connectivityManager ?: run {
+            tvConnectionStatus.text = "系统不支持 ConnectivityManager"
+            return
+        }
+
         val req = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
 
         // 清理旧回调
-        wifiCallback?.let {
-            try { connectivityManager?.unregisterNetworkCallback(it) } catch (_: Exception) {}
-        }
+        wifiCallback?.let { safeUnregister(cm, it) }
 
-        wifiCallback = object : ConnectivityManager.NetworkCallback() {
+        val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 scope.launch {
                     try {
@@ -118,16 +122,16 @@ class InputSenderActivity : AppCompatActivity() {
                             btnConnect.text = "断开"
                             etInput.isEnabled = true
                         }
-                        // 连接成功后停止服务发现
+                        // 连接成功后停止发现并注销回调
                         stopNsd()
+                        safeUnregister(cm, cb)
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
                             tvConnectionStatus.text = "连接失败: ${e.message}"
                             Toast.makeText(this@InputSenderActivity, "连接失败: ${e.message}", Toast.LENGTH_LONG).show()
                         }
-                    } finally {
-                        // 连接完成后不再持续监听网络
-                        try { wifiCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } } catch (_: Exception) {}
+                        // 失败也注销回调
+                        safeUnregister(cm, cb)
                     }
                 }
             }
@@ -137,14 +141,39 @@ class InputSenderActivity : AppCompatActivity() {
                     tvConnectionStatus.text = "Wi‑Fi 网络不可用"
                     Toast.makeText(this@InputSenderActivity, "Wi‑Fi 不可用/被VPN限制", Toast.LENGTH_SHORT).show()
                 }
+                safeUnregister(cm, this)
             }
         }
+        wifiCallback = cb
 
         try {
-            connectivityManager?.requestNetwork(req, wifiCallback as ConnectivityManager.NetworkCallback, CONNECTION_TIMEOUT)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
+            } else {
+                // API 24–25 用两参重载 + 手动超时
+                cm.requestNetwork(req, cb)
+                scope.launch {
+                    delay(CONNECTION_TIMEOUT.toLong())
+                    if (!isConnected) {
+                        withContext(Dispatchers.Main) {
+                            tvConnectionStatus.text = "连接超时"
+                        }
+                        safeUnregister(cm, cb)
+                    }
+                }
+            }
         } catch (e: Exception) {
             tvConnectionStatus.text = "请求 Wi‑Fi 失败: ${e.message}"
+            safeUnregister(cm, cb)
         }
+    }
+
+    private fun safeUnregister(cm: ConnectivityManager, cb: ConnectivityManager.NetworkCallback?) {
+        try {
+            if (cb != null) cm.unregisterNetworkCallback(cb)
+        } catch (_: Exception) {
+        }
+        if (wifiCallback === cb) wifiCallback = null
     }
 
     // —— NSD 自动发现 + 解析并连接 ——
@@ -168,21 +197,17 @@ class InputSenderActivity : AppCompatActivity() {
             override fun onDiscoveryStarted(serviceType: String) {
                 runOnUiThread { tvConnectionStatus.text = "正在发现设备…" }
             }
-
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 if (serviceInfo.serviceType == NSD_TYPE) {
                     nsdManager?.resolveService(serviceInfo, resolveListener)
                 }
             }
-
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
             override fun onDiscoveryStopped(serviceType: String) {}
-
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                 runOnUiThread { tvConnectionStatus.text = "发现失败: $errorCode" }
                 stopNsd()
             }
-
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
                 stopNsd()
             }
@@ -226,7 +251,7 @@ class InputSenderActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try { wifiCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } } catch (_: Exception) {}
+        connectivityManager?.let { cm -> safeUnregister(cm, wifiCallback) }
         stopNsd()
         disconnect()
         scope.cancel()
