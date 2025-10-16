@@ -22,8 +22,12 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    # 移除动态生成Wrapper的步骤，因为我们现在有了正确的配置文件
-    
+    - name: Generate full Gradle Wrapper
+      # This command creates gradlew, gradlew.bat, and the essential
+      # gradle/wrapper/gradle-wrapper.jar and gradle-wrapper.properties files.
+      # We specify version 8.6 to match the Android Gradle Plugin requirements.
+      run: gradle wrapper --gradle-version 8.6
+      
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
     
