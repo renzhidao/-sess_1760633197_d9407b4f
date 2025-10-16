@@ -1,4 +1,4 @@
-# 文件: settings.gradle
+// 文件: settings.gradle
 pluginManagement {
     repositories {
         google()
