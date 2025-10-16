@@ -4,9 +4,7 @@ package com.remoteinput
 import android.inputmethodservice.InputMethodService
 import android.view.View
 import android.view.inputmethod.InputMethodManager
-import android.widget.Button
-import android.widget.TextView
-import com.remoteinput.R // <-- 修复：添加 R 类导入
+import com.remoteinput.databinding.KeyboardViewBinding // <-- 修复：导入 View Binding 类
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -15,9 +13,11 @@ import java.net.Socket
 
 class RemoteIME : InputMethodService() {
     
+    // 修复：使用 View Binding
+    private lateinit var binding: KeyboardViewBinding
+    
     private var serverJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var statusText: TextView? = null
     private var serverSocket: ServerSocket? = null
     private var currentClient: Socket? = null
     
@@ -26,16 +26,15 @@ class RemoteIME : InputMethodService() {
     }
     
     override fun onCreateInputView(): View {
-        val view = layoutInflater.inflate(R.layout.keyboard_view, null)
-        statusText = view.findViewById(R.id.tvStatus)
+        // 修复：通过 View Binding 初始化视图
+        binding = KeyboardViewBinding.inflate(layoutInflater)
         
-        val btnSwitch = view.findViewById<Button>(R.id.btnSwitchIme)
-        btnSwitch.setOnClickListener {
+        binding.btnSwitchIme.setOnClickListener {
             switchToNextInputMethod()
         }
         
         startServer()
-        return view
+        return binding.root
     }
     
     private fun switchToNextInputMethod() {
@@ -52,7 +51,6 @@ class RemoteIME : InputMethodService() {
                 
                 updateStatus("等待连接...")
                 
-                // <-- 修复：明确使用 currentCoroutineContext().isActive
                 while (currentCoroutineContext().isActive) {
                     try {
                         val client = serverSocket?.accept() ?: break
@@ -117,7 +115,7 @@ class RemoteIME : InputMethodService() {
     
     private suspend fun updateStatus(status: String) {
         withContext(Dispatchers.Main) {
-            statusText?.text = "远程输入法 - $status"
+            binding.tvStatus.text = "远程输入法 - $status"
         }
     }
     
