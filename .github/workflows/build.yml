@@ -22,9 +22,8 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Generate Gradle Wrapper
-      run: gradle wrapper --gradle-version 8.4
-      
+    # 移除动态生成Wrapper的步骤，因为我们现在有了正确的配置文件
+    
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
     
