@@ -4,187 +4,95 @@ package com.remoteinput
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.widget.Button
+import android.widget.EditText
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.remoteinput.databinding.ActivityInputSenderBinding
 import kotlinx.coroutines.*
-import java.io.OutputStreamWriter
 import java.io.PrintWriter
-import java.net.InetSocketAddress
 import java.net.Socket
 
 class InputSenderActivity : AppCompatActivity() {
     
-    private lateinit var binding: ActivityInputSenderBinding
+    private lateinit var etServerIp: EditText
+    private lateinit var btnConnect: Button
+    private lateinit var tvConnectionStatus: TextView
+    private lateinit var etInput: EditText
     
     private var socket: Socket? = null
     private var writer: PrintWriter? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var connectionJob: Job? = null
-    
     private var lastText = ""
-    private var isConnected = false
-    
-    companion object {
-        const val SERVER_PORT = 9999
-        const val CONNECTION_TIMEOUT = 5000
-    }
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityInputSenderBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_input_sender)
         
-        setupListeners()
-    }
-    
-    private fun setupListeners() {
-        binding.btnConnect.setOnClickListener {
-            if (isConnected) {
-                disconnect()
-            } else {
+        etServerIp = findViewById(R.id.etServerIp)
+        btnConnect = findViewById(R.id.btnConnect)
+        tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
+        etInput = findViewById(R.id.etInput)
+        
+        btnConnect.setOnClickListener {
+            if (socket == null || socket!!.isClosed) {
                 connect()
+            } else {
+                disconnect()
             }
         }
         
-        binding.etInput.addTextChangedListener(object : TextWatcher {
+        etInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            
             override fun afterTextChanged(s: Editable?) {
-                if (isConnected) {
-                    handleTextChange(s.toString())
-                }
+                handleTextChange(s.toString())
             }
         })
     }
     
     private fun connect() {
-        val ip = binding.etServerIp.text.toString().trim()
+        val ip = etServerIp.text.toString().trim()
+        if (ip.isEmpty()) return
         
-        if (ip.isEmpty()) {
-            Toast.makeText(this, "请输入IP地址", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        if (!isValidIpAddress(ip)) {
-            Toast.makeText(this, "IP地址格式错误", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        connectionJob = scope.launch {
+        scope.launch {
             try {
-                updateUI("连接中...")
-                
-                socket = Socket()
-                socket?.connect(InetSocketAddress(ip, SERVER_PORT), CONNECTION_TIMEOUT)
-                
-                writer = PrintWriter(
-                    OutputStreamWriter(socket!!.getOutputStream(), "UTF-8"),
-                    true
-                )
-                
-                isConnected = true
-                
+                socket = Socket(ip, 9999)
+                writer = PrintWriter(socket!!.getOutputStream(), true)
                 withContext(Dispatchers.Main) {
-                    binding.tvConnectionStatus.text = "已连接到: $ip"
-                    // 核心修复：暂时使用硬编码字符串
-                    binding.btnConnect.text = "断开连接"
-                    binding.etInput.isEnabled = true
-                    Toast.makeText(this@InputSenderActivity, "连接成功", Toast.LENGTH_SHORT).show()
+                    tvConnectionStatus.text = "已连接"
+                    btnConnect.text = "断开"
                 }
-                
             } catch (e: Exception) {
-                e.printStackTrace()
-                isConnected = false
-                
                 withContext(Dispatchers.Main) {
-                    // 核心修复：暂时使用硬编码字符串
-                    binding.tvConnectionStatus.text = "未连接"
-                    Toast.makeText(
-                        this@InputSenderActivity,
-                        "连接失败: ${e.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(this@InputSenderActivity, "连接失败: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
     
     private fun disconnect() {
-        connectionJob?.cancel()
-        
         scope.launch {
             try {
                 writer?.close()
                 socket?.close()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-            
-            socket = null
-            writer = null
-            isConnected = false
-            lastText = ""
-            
-            withContext(Dispatchers.Main) {
-                // 核心修复：暂时使用硬编码字符串
-                binding.tvConnectionStatus.text = "未连接"
-                binding.btnConnect.text = "连接"
-                binding.etInput.isEnabled = true
+            } finally {
+                withContext(Dispatchers.Main) {
+                    tvConnectionStatus.text = "未连接"
+                    btnConnect.text = "连接"
+                }
             }
         }
     }
     
     private fun handleTextChange(currentText: String) {
         scope.launch {
-            try {
-                writer?.let { w ->
-                    when {
-                        currentText.isEmpty() && lastText.isNotEmpty() -> {
-                            w.println("CLEAR")
-                        }
-                        currentText.length < lastText.length -> {
-                            val deleteCount = lastText.length - currentText.length
-                            if (deleteCount == 1) {
-                                w.println("BACKSPACE")
-                            } else {
-                                w.println("DELETE:$deleteCount")
-                            }
-                        }
-                        currentText.length > lastText.length -> {
-                            val newText = currentText.substring(lastText.length)
-                            w.println("TEXT:$newText")
-                        }
-                    }
-                    lastText = currentText
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(
-                        this@InputSenderActivity,
-                        "发送失败，连接可能已断开",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    disconnect()
-                }
+            if (currentText.length > lastText.length) {
+                writer?.println("TEXT:" + currentText.last())
+            } else if (currentText.length < lastText.length) {
+                writer?.println("BACKSPACE")
             }
-        }
-    }
-    
-    private fun isValidIpAddress(ip: String): Boolean {
-        val parts = ip.split(".")
-        if (parts.size != 4) return false
-        
-        return parts.all { part ->
-            part.toIntOrNull()?.let { it in 0..255 } ?: false
-        }
-    }
-    
-    private suspend fun updateUI(status: String) {
-        withContext(Dispatchers.Main) {
-            binding.tvConnectionStatus.text = status
+            lastText = currentText
         }
     }
     
