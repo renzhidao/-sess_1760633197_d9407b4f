@@ -6,18 +6,16 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.remoteinput.databinding.ActivityMainBinding // <-- 修复：导入 View Binding 类
+import com.remoteinput.databinding.ActivityMainBinding
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
 class MainActivity : AppCompatActivity() {
     
-    // 修复：使用 View Binding
     private lateinit var binding: ActivityMainBinding
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 修复：通过 View Binding 设置布局
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         
@@ -47,7 +45,8 @@ class MainActivity : AppCompatActivity() {
     
     private fun displayIpAddress() {
         val ip = getLocalIpAddress()
-        binding.tvIpAddress.text = getString(R.string.ip_address, ip)
+        // 核心修复：暂时使用硬编码字符串以打破编译死锁
+        binding.tvIpAddress.text = "本机IP: $ip"
     }
     
     private fun getLocalIpAddress(): String {

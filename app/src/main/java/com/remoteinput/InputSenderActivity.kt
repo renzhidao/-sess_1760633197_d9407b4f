@@ -6,7 +6,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.remoteinput.databinding.ActivityInputSenderBinding // <-- 修复：导入 View Binding 类
+import com.remoteinput.databinding.ActivityInputSenderBinding
 import kotlinx.coroutines.*
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
@@ -15,7 +15,6 @@ import java.net.Socket
 
 class InputSenderActivity : AppCompatActivity() {
     
-    // 修复：使用 View Binding
     private lateinit var binding: ActivityInputSenderBinding
     
     private var socket: Socket? = null
@@ -33,7 +32,6 @@ class InputSenderActivity : AppCompatActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 修复：通过 View Binding 设置布局
         binding = ActivityInputSenderBinding.inflate(layoutInflater)
         setContentView(binding.root)
         
@@ -90,7 +88,8 @@ class InputSenderActivity : AppCompatActivity() {
                 
                 withContext(Dispatchers.Main) {
                     binding.tvConnectionStatus.text = "已连接到: $ip"
-                    binding.btnConnect.text = getString(R.string.disconnect)
+                    // 核心修复：暂时使用硬编码字符串
+                    binding.btnConnect.text = "断开连接"
                     binding.etInput.isEnabled = true
                     Toast.makeText(this@InputSenderActivity, "连接成功", Toast.LENGTH_SHORT).show()
                 }
@@ -100,7 +99,8 @@ class InputSenderActivity : AppCompatActivity() {
                 isConnected = false
                 
                 withContext(Dispatchers.Main) {
-                    binding.tvConnectionStatus.text = getString(R.string.status_waiting)
+                    // 核心修复：暂时使用硬编码字符串
+                    binding.tvConnectionStatus.text = "未连接"
                     Toast.makeText(
                         this@InputSenderActivity,
                         "连接失败: ${e.message}",
@@ -128,8 +128,9 @@ class InputSenderActivity : AppCompatActivity() {
             lastText = ""
             
             withContext(Dispatchers.Main) {
-                binding.tvConnectionStatus.text = getString(R.string.status_waiting)
-                binding.btnConnect.text = getString(R.string.connect)
+                // 核心修复：暂时使用硬编码字符串
+                binding.tvConnectionStatus.text = "未连接"
+                binding.btnConnect.text = "连接"
                 binding.etInput.isEnabled = true
             }
         }
