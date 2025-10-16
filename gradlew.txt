@@ -1,0 +1,206 @@
+# 文件: gradlew
+#!/usr/bin/env sh
+
+#
+# Copyright 2015 the original author or authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+##############################################################################
+##
+##  Gradle start up script for UN*X
+##
+##############################################################################
+
+# Attempt to set APP_HOME
+# Resolve links: $0 may be a link
+PRG="$0"
+# Need this for relative symlinks.
+while [ -h "$PRG" ] ; do
+    ls=`ls -ld "$PRG"`
+    link=`expr "$ls" : '.*-> KATEX_INLINE_OPEN.*KATEX_INLINE_CLOSE$'`
+    if expr "$link" : '/.*' > /dev/null; then
+        PRG="$link"
+    else
+        PRG=`dirname "$PRG"`"/$link"
+    fi
+done
+SAVED="`pwd`"
+cd "`dirname \"$PRG\"`/" >/dev/null
+APP_HOME="`pwd -P`"
+cd "$SAVED" >/dev/null
+
+APP_NAME="Gradle"
+APP_BASE_NAME=`basename "$0"`
+
+# Use the maximum available, or set MAX_FD != -1 to use that value.
+MAX_FD="maximum"
+
+warn () {
+    echo "$*"
+}
+
+die () {
+    echo
+    echo "$*"
+    echo
+    exit 1
+}
+
+# OS specific support (must be 'true' or 'false').
+cygwin=false
+msys=false
+darwin=false
+nonstop=false
+case "`uname`" in
+  CYGWIN* )
+    cygwin=true
+    ;;
+  Darwin* )
+    darwin=true
+    ;;
+  MINGW* )
+    msys=true
+    ;;
+  NONSTOP* )
+    nonstop=true
+    ;;
+esac
+
+# For Cygwin, ensure paths are in UNIX format before anything is touched.
+if ${cygwin} ; then
+    [ -n "$JAVA_HOME" ] && JAVA_HOME=`cygpath --unix "$JAVA_HOME"`
+fi
+
+# Attempt to find JAVA_HOME if not already set.
+if [ -z "$JAVA_HOME" ] ; then
+    if ${darwin} ; then
+        [ -z "$JAVA_HOME" ] && JAVA_HOME=`/usr/libexec/java_home`
+    fi
+    [ -z "$JAVA_HOME" ] && JAVA_HOME=`find /usr/java -maxdepth 1 -type d -name "jdk*" | sort -r | head -n 1`
+    [ -z "$JAVA_HOME" ] && [ -d "/usr/lib/jvm/default-java" ] && JAVA_HOME="/usr/lib/jvm/default-java"
+fi
+
+# Determine the Java command to use to start the JVM.
+if [ -n "$JAVA_HOME" ] ; then
+    if [ -x "$JAVA_HOME/jre/sh/java" ] ; then
+        # IBM's JDK on AIX uses strange locations for the executables
+        JAVACMD="$JAVA_HOME/jre/sh/java"
+    else
+        JAVACMD="$JAVA_HOME/bin/java"
+    fi
+    if [ ! -x "$JAVACMD" ] ; then
+        die "ERROR: JAVA_HOME is set to an invalid directory: $JAVA_HOME
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+else
+    JAVACMD="java"
+    which java >/dev/null 2>&1 || die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+fi
+
+# Set default JVM options if none are defined.
+if [ -z "$GRADLE_OPTS" ]; then
+    GRADLE_OPTS="-Xmx64m -Xms64m"
+fi
+
+# Add default JVM options for JDK 9 and above.
+# JDK 9 introduced Jigsaw modules. It requires different options to configure the JVM.
+# It is not possible to use the same options for JDK 8 and JDK 9+.
+# So we need to detect the JDK version and set the options accordingly.
+# It is not possible to use 'java -version' because it prints to stderr.
+# So we need to use a different approach.
+# We can use the 'java.version' system property.
+# However, we cannot use it directly because it is not available in the shell.
+# So we need to use a Java class to print it.
+# We use a simple class that prints the version and exits.
+# We compile it on the fly and run it.
+# We use a temporary directory to store the class and the compiled class.
+# We delete the temporary directory after use.
+java_version=$($JAVACMD -Djava.awt.headless=true -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d'.' -f1)
+if [ "$java_version" -ge 9 ]; then
+    DEFAULT_JVM_OPTS='--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.desktop/java.awt=ALL-UNNAMED'
+fi
+
+# Add Graphviz support
+if [ -n "$GRAPHVIZ_DOT" ] ; then
+    GRADLE_OPTS="$GRADLE_OPTS -Dorg.gradle.graphviz.dot="$GRAPHVIZ_DOT""
+fi
+
+# Add org.gradle.java.home if it's not set
+if echo "$GRADLE_OPTS" | grep -q "org.gradle.java.home" ; then
+    :
+else
+    GRADLE_OPTS="$GRADLE_OPTS -Dorg.gradle.java.home=\"$JAVA_HOME\""
+fi
+
+# Build the classpath
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+# Prepend the JVM options
+GRADLE_OPTS="$DEFAULT_JVM_OPTS $GRADLE_OPTS"
+
+##############################################################################
+##
+##  Execute Gradle
+##
+##############################################################################
+
+# Split up the JVM options and the Gradle options.
+# This is necessary because the JVM options must be passed before the main class
+# and the Gradle options must be passed after the main class.
+# The Gradle options are all options that are not JVM options.
+# A JVM option starts with '-'.
+# A Gradle option starts with '--'.
+# A Gradle option can also start with '-'.
+# So we need to distinguish between them.
+# We can do this by checking if the option is a valid JVM option.
+# We can do this by checking if the option is in the list of valid JVM options.
+# However, this is a lot of work.
+# So we use a simpler approach.
+# We assume that all options that start with '-D' or '-X' or '-XX:' are JVM options.
+# We also assume that '-ea', '-da', '-dsa', '-esa', '-agentlib:', '-agentpath:', '-javaagent:', '-splash:' are JVM options.
+# All other options are Gradle options.
+# This is not perfect, but it should work for most cases.
+# We can also use a different approach.
+# We can assume that all options that are not Gradle options are JVM options.
+# A Gradle option is a task name or a Gradle option.
+# A Gradle option starts with '--' or '-'.
+# A Gradle task name does not start with '-'.
+# So we can assume that all options that do not start with '-' are Gradle tasks.
+# We can also assume that all options that start with '--' are Gradle options.
+# All other options are JVM options.
+# This is also not perfect, but it should work for most cases.
+# We use the first approach.
+
+# Split up the JVM options and the Gradle options.
+jvm_opts_array=()
+gradle_opts_array=()
+for opt in $GRADLE_OPTS; do
+    case $opt in
+        -D*|-X*|-XX:*|-ea|-da|-dsa|-esa|-agentlib:*|-agentpath:*|-javaagent:*|-splash:*)
+            jvm_opts_array+=("$opt")
+            ;;
+        *)
+            gradle_opts_array+=("$opt")
+            ;;
+    esac
+done
+
+# Execute Gradle
+exec "$JAVACMD" "${jvm_opts_array[@]}" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "${gradle_opts_array[@]}" "$@"
