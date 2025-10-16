@@ -106,9 +106,9 @@ class InputSenderActivity : AppCompatActivity() {
             .build()
 
         // 清理旧回调
-        wifiCallback?.let { safeUnregister(cm, it) }
+        safeUnregisterCurrent(cm)
 
-        val cb = object : ConnectivityManager.NetworkCallback() {
+        wifiCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 scope.launch {
                     try {
@@ -124,13 +124,13 @@ class InputSenderActivity : AppCompatActivity() {
                         }
                         // 连接成功后停止发现并注销回调
                         stopNsd()
-                        safeUnregister(cm, cb)
+                        safeUnregisterCurrent(cm)
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
                             tvConnectionStatus.text = "连接失败: ${e.message}"
                             Toast.makeText(this@InputSenderActivity, "连接失败: ${e.message}", Toast.LENGTH_LONG).show()
                         }
-                        safeUnregister(cm, cb)
+                        safeUnregisterCurrent(cm)
                     }
                 }
             }
@@ -140,37 +140,40 @@ class InputSenderActivity : AppCompatActivity() {
                     tvConnectionStatus.text = "Wi‑Fi 网络不可用"
                     Toast.makeText(this@InputSenderActivity, "Wi‑Fi 不可用/被VPN限制", Toast.LENGTH_SHORT).show()
                 }
-                safeUnregister(cm, this)
+                safeUnregisterCurrent(cm)
             }
         }
-        wifiCallback = cb
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
-            } else {
-                // API 24–25 用两参重载 + 手动超时
-                cm.requestNetwork(req, cb)
-                scope.launch {
-                    delay(CONNECTION_TIMEOUT.toLong())
-                    if (!isConnected) {
-                        withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接超时" }
-                        safeUnregister(cm, cb)
+            wifiCallback?.let { cb ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
+                } else {
+                    // API 24–25 用两参重载 + 手动超时
+                    cm.requestNetwork(req, cb)
+                    scope.launch {
+                        delay(CONNECTION_TIMEOUT.toLong())
+                        if (!isConnected) {
+                            withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接超时" }
+                            safeUnregisterCurrent(cm)
+                        }
                     }
                 }
             }
         } catch (e: Exception) {
             tvConnectionStatus.text = "请求 Wi‑Fi 失败: ${e.message}"
-            safeUnregister(cm, cb)
+            safeUnregisterCurrent(cm)
         }
     }
 
-    private fun safeUnregister(cm: ConnectivityManager, callback: ConnectivityManager.NetworkCallback?) {
+    private fun safeUnregisterCurrent(cm: ConnectivityManager) {
+        val cb = wifiCallback ?: return
         try {
-            if (callback != null) cm.unregisterNetworkCallback(callback)
+            cm.unregisterNetworkCallback(cb)
         } catch (_: Exception) {
+        } finally {
+            if (wifiCallback === cb) wifiCallback = null
         }
-        if (wifiCallback === callback) wifiCallback = null
     }
 
     // —— NSD 自动发现 + 解析并连接 ——
@@ -247,7 +250,7 @@ class InputSenderActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        connectivityManager?.let { cm -> safeUnregister(cm, wifiCallback) }
+        connectivityManager?.let { cm -> safeUnregisterCurrent(cm) }
         stopNsd()
         disconnect()
         scope.cancel()
