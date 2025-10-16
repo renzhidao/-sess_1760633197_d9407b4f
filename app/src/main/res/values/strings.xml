@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/values/strings.xml -->
+<resources>
+    <string name="app_name">远程输入法</string>
+    <string name="mode_receiver">接收端（输入法）</string>
+    <string name="mode_sender">发送端</string>
+    <string name="status_waiting">等待连接…</string>
+    <string name="status_connected">已连接</string>
+    <string name="input_hint">在此输入，远程手机会实时显示</string>
+    <string name="ip_address">本机IP: %s</string>
+    <string name="connect">连接</string>
+    <string name="disconnect">断开</string>
+    <string name="switch_normal_ime">切换回系统输入法</string>
+</resources>
