@@ -32,7 +32,6 @@ class InputSenderActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("remote_input", Context.MODE_PRIVATE) }
     private val PREF_LAST_IP = "last_ip"
 
-    // 绑定 Hub
     private var hub: SocketHubService? = null
     private val appSink = object : SocketHubService.AppSink {
         override fun onText(text: String) {
@@ -62,12 +61,20 @@ class InputSenderActivity : AppCompatActivity() {
             }
         }
         override fun onHandshake(ip: String) {
-            scope.launch { etServerIp.setText(ip) }
+            // 填入 IP 框并自动回连（像配对一样）
+            scope.launch {
+                if (!isSelfIp(ip)) {
+                    etServerIp.setText(ip)
+                    tvConnectionStatus.text = "收到配对请求：$ip"
+                    prefs.edit().putString(PREF_LAST_IP, ip).apply()
+                    hub?.connect(ip)
+                }
+            }
         }
         override fun onConnectionState(state: String) {
             scope.launch { tvConnectionStatus.text = state }
         }
-        override fun isActive(): Boolean = true // 页面在前台即活跃
+        override fun isActive(): Boolean = true
     }
 
     private val conn = object : ServiceConnection {
@@ -75,7 +82,7 @@ class InputSenderActivity : AppCompatActivity() {
             val binder = service as SocketHubService.LocalBinder
             hub = binder.getService()
             hub?.registerAppSink(appSink)
-            tvConnectionStatus.text = "单端口Hub已连接（本地）"
+            tvConnectionStatus.text = "已就绪（单端口配对）"
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             hub?.registerAppSink(null)
@@ -92,12 +99,10 @@ class InputSenderActivity : AppCompatActivity() {
         tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
         etInput = findViewById(R.id.etInput)
 
-        // 绑定 Service
         val intent = Intent(this, SocketHubService::class.java)
         startService(intent)
         bindService(intent, conn, Context.BIND_AUTO_CREATE)
 
-        // 回填上次IP
         prefs.getString(PREF_LAST_IP, null)?.let { last ->
             if (last.isNotBlank()) etServerIp.setText(last)
         }
@@ -112,8 +117,8 @@ class InputSenderActivity : AppCompatActivity() {
                 Toast.makeText(this, "目标IP不能是本机IP", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            prefs.edit().putString(PREF_LAST_IP, ip).apply()
             tvConnectionStatus.text = "连接中：$ip:${SocketHubService.PORT}"
+            prefs.edit().putString(PREF_LAST_IP, ip).apply()
             hub?.connect(ip)
         }
 

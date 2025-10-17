@@ -24,42 +24,43 @@ class SocketHubService : Service() {
         private const val TEXT = "TEXT"                 // TEXT:<payload>
         private const val BACKSPACE = "BACKSPACE"
         private const val CLEAR = "CLEAR"
+        private const val PING = "PING"
+        private const val PONG = "PONG"
     }
 
-    // 协程作用域
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    // 单端口服务器
     private var serverSocket: ServerSocket? = null
     private var serverJob: Job? = null
 
-    // 当前对等端连接（谁先连上/后连上，替换旧连接）
     private var peerSocket: Socket? = null
     private var peerWriter: PrintWriter? = null
     private var peerReadJob: Job? = null
+    private var heartbeatJob: Job? = null
+    private var lastPongTime = 0L
+    private var lastPeerIp: String? = null
+    private var reconnectJob: Job? = null
 
-    // 本机落地接收器：IME 和 APP（Activity）
     interface ImeSink {
         fun onText(text: String)
         fun onBackspace()
         fun onClear()
-        fun isActive(): Boolean // 当前是否活跃（有输入焦点）
+        fun isActive(): Boolean
     }
 
     interface AppSink {
         fun onText(text: String)
         fun onBackspace()
         fun onClear()
-        fun onHandshake(ip: String) // 收到对端IP，放到IP输入框
-        fun onConnectionState(state: String) // 连接状态文案
+        fun onHandshake(ip: String)
+        fun onConnectionState(state: String)
         fun isActive(): Boolean
     }
 
     private var imeSink: ImeSink? = null
     private var appSink: AppSink? = null
 
-    // Binder
     inner class LocalBinder : Binder() {
         fun getService(): SocketHubService = this@SocketHubService
     }
@@ -73,38 +74,31 @@ class SocketHubService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        reconnectJob?.cancel()
+        heartbeatJob?.cancel()
         closePeer()
         stopServer()
         scope.cancel()
         mainScope.cancel()
     }
 
-    // 对外API（Activity/IME 调用）
-    fun registerImeSink(sink: ImeSink?) {
-        imeSink = sink
-    }
-
-    fun registerAppSink(sink: AppSink?) {
-        appSink = sink
-    }
-
-    fun setImeActive(active: Boolean) {
-        // 可按需上报给对端 STATE 帧，这里先省略
-    }
-
-    fun setAppActive(active: Boolean) {
-        // 可按需上报给对端 STATE 帧，这里先省略
-    }
+    fun registerImeSink(sink: ImeSink?) { imeSink = sink }
+    fun registerAppSink(sink: AppSink?) { appSink = sink }
 
     fun connect(ip: String) {
-        // 纯直连（稳定），避免任何绑定网络带来的权限问题
-        scope.launch {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            if (ip == getLocalIpAddress()) {
+                notifyState("目标IP不能是本机IP")
+                return@launch
+            }
             try {
                 val s = Socket()
                 s.tcpNoDelay = true
                 s.keepAlive = true
                 s.connect(InetSocketAddress(ip, PORT), 10_000)
                 setPeer(s)
+                lastPeerIp = ip
                 sendHandshake()
                 notifyState("已连接：$ip:$PORT")
             } catch (_: Exception) {
@@ -114,25 +108,18 @@ class SocketHubService : Service() {
     }
 
     fun disconnect() {
+        reconnectJob?.cancel()
+        heartbeatJob?.cancel()
         scope.launch {
             closePeer()
             notifyState("未连接")
         }
     }
 
-    fun sendText(text: String) {
-        sendFrame("$TEXT:$text")
-    }
+    fun sendText(text: String) = sendFrame("$TEXT:$text")
+    fun sendBackspace() = sendFrame(BACKSPACE)
+    fun sendClear() = sendFrame(CLEAR)
 
-    fun sendBackspace() {
-        sendFrame(BACKSPACE)
-    }
-
-    fun sendClear() {
-        sendFrame(CLEAR)
-    }
-
-    // 内部：服务器启动/停止
     private fun startServerIfNeeded() {
         if (serverJob?.isActive == true) return
         serverJob = scope.launch {
@@ -142,10 +129,10 @@ class SocketHubService : Service() {
                 notifyState("监听端口：$PORT")
                 while (isActive) {
                     val client = serverSocket!!.accept()
-                    // 来新连接就替换旧连接
                     setPeer(client)
+                    lastPeerIp = client.inetAddress?.hostAddress
                     sendHandshake()
-                    notifyState("已连接：${client.inetAddress?.hostAddress}:$PORT")
+                    notifyState("已连接：${lastPeerIp}:$PORT")
                 }
             } catch (_: Exception) {
                 notifyState("服务异常")
@@ -156,16 +143,14 @@ class SocketHubService : Service() {
     private fun stopServer() {
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
-        serverJob?.cancel()
-        serverJob = null
+        serverJob?.cancel(); serverJob = null
     }
 
-    // 内部：设置对端连接
     private fun setPeer(sock: Socket) {
         closePeer()
         peerSocket = sock
         peerWriter = PrintWriter(sock.getOutputStream(), true)
-        // 开读循环
+        // 读循环
         peerReadJob = scope.launch {
             try {
                 val reader = BufferedReader(InputStreamReader(sock.getInputStream(), "UTF-8"))
@@ -177,20 +162,47 @@ class SocketHubService : Service() {
             } finally {
                 notifyState("连接断开")
                 closePeer()
+                scheduleReconnect()
+            }
+        }
+        // 心跳
+        lastPongTime = System.currentTimeMillis()
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                try {
+                    peerWriter?.println(PING)
+                } catch (_: Exception) {}
+                delay(10_000)
+                if (System.currentTimeMillis() - lastPongTime > 30_000) {
+                    notifyState("心跳超时，断开")
+                    closePeer()
+                    scheduleReconnect()
+                    break
+                }
             }
         }
     }
 
     private fun closePeer() {
-        peerReadJob?.cancel()
-        peerReadJob = null
+        heartbeatJob?.cancel(); heartbeatJob = null
+        peerReadJob?.cancel(); peerReadJob = null
         try { peerWriter?.close() } catch (_: Exception) {}
         peerWriter = null
         try { peerSocket?.close() } catch (_: Exception) {}
         peerSocket = null
     }
 
-    // 内部：发送帧
+    private fun scheduleReconnect() {
+        val ip = lastPeerIp ?: return
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(2_000)
+            notifyState("尝试重连：$ip")
+            connect(ip)
+        }
+    }
+
     private fun sendFrame(frame: String) {
         try {
             peerWriter?.println(frame)
@@ -199,11 +211,12 @@ class SocketHubService : Service() {
         }
     }
 
-    // 内部：分发远端帧
     private fun dispatchIncoming(frame: String) {
         when {
+            frame == PING -> sendFrame(PONG)
+            frame == PONG -> lastPongTime = System.currentTimeMillis()
             frame.startsWith("$REQ_CONNECT:") -> {
-                val ip = frame.substringAfter("$REQ_CONNECT:").substringBefore(":")
+                val ip = frame.substringAfter("$REQ_CONNECT:")
                 mainScope.launch { appSink?.onHandshake(ip) }
             }
             frame.startsWith("$TEXT:") -> {
@@ -212,24 +225,15 @@ class SocketHubService : Service() {
             }
             frame == BACKSPACE -> routeBackspace()
             frame == CLEAR -> routeClear()
-            else -> {
-                // 其它扩展帧（HELLO/STATE）此处忽略
-            }
         }
     }
 
     private fun routeText(text: String) {
         mainScope.launch {
-            val delivered = if (imeSink?.isActive() == true) {
-                imeSink?.onText(text); true
-            } else if (appSink?.isActive() == true) {
-                appSink?.onText(text); true
-            } else {
-                // 都不活跃，默认落到APP
-                appSink?.onText(text); true
-            }
-            if (!delivered) {
-                // 无接收器也无所谓
+            when {
+                imeSink?.isActive() == true -> imeSink?.onText(text)
+                appSink?.isActive() == true -> appSink?.onText(text)
+                else -> appSink?.onText(text) // 无活跃接收器时落到 App
             }
         }
     }
