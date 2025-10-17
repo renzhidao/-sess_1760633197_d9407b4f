@@ -46,7 +46,6 @@ class InputSenderActivity : AppCompatActivity() {
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var lastNetwork: Network? = null
 
-    // 本机应用接收服务（端口）
     companion object {
         const val PORT_IME = 9999
         const val PORT_APP = 10001
@@ -64,7 +63,7 @@ class InputSenderActivity : AppCompatActivity() {
 
         connectivityManager = getSystemService(ConnectivityManager::class.java)
 
-        // 启动本机 APP 接收服务器（不需要对方点击连接）
+        // 启动本机 APP 接收服务器（对方无需点连接也能互相发）
         startAppReceiverServer()
 
         btnConnect.setOnClickListener {
@@ -73,9 +72,9 @@ class InputSenderActivity : AppCompatActivity() {
                 if (ip.isEmpty()) {
                     Toast.makeText(this, "请输入对方IP", Toast.LENGTH_SHORT).show()
                 } else {
-                    // 优先连对方 IME（9999），成功后顺带建立 APP 通道（10001）
+                    // 优先连对方 IME（9999），成功后再建立 APP（10001）反向通道
                     connectViaWifi(ip, PORT_IME) {
-                        // 若对方不是输入法，则直接尝试 APP 接收端
+                        // 对方不是输入法则尝试 APP
                         connectViaWifi(ip, PORT_APP, null)
                     }
                 }
@@ -142,11 +141,11 @@ class InputSenderActivity : AppCompatActivity() {
                                     tvConnectionStatus.text = "已连接到 IME: $ip:$port"
                                     btnConnect.text = "断开"
                                 }
-                                // 同时建立到对方APP的通道，形成反向链路（只需一边点连接）
+                                // 建立到对方 APP 的通道，形成反向链路（只需一边点连接）
                                 ensureAppClientChannel(ip)
-                                // 监听对方发来的内容（一般IME不回消息，但保持兼容）
+                                // 监听对方发来的内容（IME一般不回，但兼容）
                                 listenIncoming(s)
-                                // 发送我的IP（可选手握），对方无需再点连接
+                                // 可选发送本机IP
                                 sendHelloFrames()
                             }
                             PORT_APP -> {
@@ -167,9 +166,7 @@ class InputSenderActivity : AppCompatActivity() {
                         }
                         onFail?.invoke()
                     } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            tvConnectionStatus.text = "连接失败: ${e.message}"
-                        }
+                        withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接失败: ${e.message}" }
                         onFail?.invoke()
                     } finally {
                         wifiCallback?.let { safeUnregister(cm, it) }
@@ -216,7 +213,7 @@ class InputSenderActivity : AppCompatActivity() {
         val net = lastNetwork
         scope.launch {
             try {
-                val s = (net?.socketFactory ?: SocketFactory.getDefault()).createSocket() as Socket
+                val s = net?.socketFactory?.createSocket() ?: Socket()
                 s.connect(InetSocketAddress(ip, PORT_APP), CONNECTION_TIMEOUT)
                 socketAppClient = s
                 writerAppClient = PrintWriter(s.getOutputStream(), true)
@@ -236,9 +233,8 @@ class InputSenderActivity : AppCompatActivity() {
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
                     val msg = line!!
-                    // 简单握手（对端若发送我的IP可用于日志或后续策略，这里不强制使用）
                     if (msg.startsWith("HELLO_FROM:")) {
-                        // 格式：HELLO_FROM:x.x.x.x:10001 （可按需解析）
+                        // 可解析对方IP，当前策略不强制使用
                         continue
                     }
                     applyRemoteMessage(msg)
@@ -288,7 +284,6 @@ class InputSenderActivity : AppCompatActivity() {
                             while (reader.readLine().also { line = it } != null) {
                                 val msg = line!!
                                 if (msg.startsWith("HELLO_FROM:")) {
-                                    // 可在此解析对方IP并选择是否反连，这里已有写通道不强制再建
                                     continue
                                 }
                                 applyRemoteMessage(msg)
@@ -335,7 +330,6 @@ class InputSenderActivity : AppCompatActivity() {
                     val a = addrs.nextElement()
                     if (!a.isLoopbackAddress && a is Inet4Address) {
                         val ip = a.hostAddress ?: continue
-                        // 常见私网网段
                         if (ip.startsWith("192.168.") || ip.startsWith("10.") ||
                             ip.matches(Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\..*"))
                         ) return ip
