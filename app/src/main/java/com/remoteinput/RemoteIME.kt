@@ -2,6 +2,7 @@
 package com.remoteinput
 
 import android.inputmethodservice.InputMethodService
+import android.util.Log
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
@@ -16,6 +17,7 @@ class RemoteIME : InputMethodService() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var serverJob: Job? = null
     private var statusTextView: TextView? = null
+    private val TAG = "RemoteInput-IME"
 
     override fun onCreateInputView(): View {
         val keyboardView = layoutInflater.inflate(R.layout.keyboard_view, null)
@@ -35,23 +37,31 @@ class RemoteIME : InputMethodService() {
             try {
                 val serverSocket = ServerSocket(9999)
                 withContext(Dispatchers.Main) { statusTextView?.text = "等待连接..." }
+                Log.d(TAG, "IME 服务已启动，监听 9999")
 
                 while (currentCoroutineContext().isActive) {
                     val client = serverSocket.accept()
+                    Log.d(TAG, "收到连接：${client.inetAddress?.hostAddress}:${client.port}")
                     withContext(Dispatchers.Main) { statusTextView?.text = "已连接" }
 
                     val reader = BufferedReader(InputStreamReader(client.getInputStream()))
                     try {
-                        while (currentCoroutineContext().isActive) {
-                            val line = reader.readLine() ?: break
-                            withContext(Dispatchers.Main) { processCommand(line) }
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            val msg = line!!
+                            Log.d(TAG, "收到数据帧: ${msg.take(64)}")
+                            withContext(Dispatchers.Main) { processCommand(msg) }
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "读写异常: ${e.message}", e)
                     } finally {
                         withContext(Dispatchers.Main) { statusTextView?.text = "连接断开" }
                         client.close()
+                        Log.d(TAG, "连接关闭")
                     }
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "IME 服务异常: ${e.message}", e)
                 withContext(Dispatchers.Main) { statusTextView?.text = "服务错误" }
             }
         }
@@ -63,7 +73,7 @@ class RemoteIME : InputMethodService() {
             command.startsWith("TEXT:") -> ic.commitText(command.removePrefix("TEXT:"), 1)
             command == "BACKSPACE" -> ic.deleteSurroundingText(1, 0)
             command == "CLEAR" -> ic.deleteSurroundingText(1000, 1000)
-            else -> { /* 忽略未知控制帧 */ }
+            else -> Log.d(TAG, "忽略非文本帧: ${command.take(64)}")
         }
     }
 
@@ -71,5 +81,6 @@ class RemoteIME : InputMethodService() {
         super.onDestroy()
         serverJob?.cancel()
         scope.cancel()
+        Log.d(TAG, "IME 服务关闭")
     }
 }

@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -56,6 +57,19 @@ class InputSenderActivity : AppCompatActivity() {
     private var reqConnectSent = false
     private var autoConnectTriggered = false
 
+    // 日志
+    private val TAG = "RemoteInput"
+    private val uiLog = ArrayDeque<String>()
+    private fun log(msg: String, t: Throwable? = null) {
+        if (t != null) Log.e(TAG, msg, t) else Log.d(TAG, msg)
+        runOnUiThread {
+            // 只保留最近 10 行
+            if (uiLog.size >= 10) uiLog.removeFirst()
+            uiLog.addLast(msg)
+            tvConnectionStatus.text = uiLog.joinToString("\n")
+        }
+    }
+
     companion object {
         const val PORT_IME = 9999
         const val PORT_APP = 10001
@@ -85,9 +99,12 @@ class InputSenderActivity : AppCompatActivity() {
         prefs.getString(PREF_LAST_IP, null)?.let { last ->
             if (last.isNotBlank()) {
                 etServerIp.setText(last)
+                log("恢复上次 IP: $last")
                 if (AUTO_CONNECT_ON_START) {
-                    // 避免 UI 还没起来，稍微延迟一下
-                    etServerIp.post { connectSequence(last) }
+                    etServerIp.post {
+                        log("自动重连流程开始")
+                        connectSequence(last)
+                    }
                 }
             }
         }
@@ -115,8 +132,12 @@ class InputSenderActivity : AppCompatActivity() {
                 scope.launch {
                     val delta = currentText.length - lastText.length
                     when {
-                        delta > 0 -> broadcast("$TEXT:${currentText.substring(lastText.length)}")
-                        delta < 0 -> repeat(-delta) { broadcast(BACKSPACE) }
+                        delta > 0 -> broadcast("$TEXT:${currentText.substring(lastText.length)}").also {
+                            log("发送 TEXT 增量: ${currentText.substring(lastText.length)}")
+                        }
+                        delta < 0 -> repeat(-delta) {
+                            broadcast(BACKSPACE)
+                        }.also { log("发送 BACKSPACE x${-delta}") }
                     }
                     lastText = currentText
                 }
@@ -124,46 +145,43 @@ class InputSenderActivity : AppCompatActivity() {
         })
     }
 
-    // 首选：Wi‑Fi 指定网络 → 失败再回落普通直连；顺序：IME → APP
+    // 连通策略：先 Wi‑Fi 指定网络（绕 VPN），失败再普通直连；顺序 IME→APP
     private fun connectSequence(ip: String) {
-        tvConnectionStatus.text = "准备连接：$ip"
-        // 优先 IME
+        log("开始连接流程：$ip")
         connectPreferWifiThenDirect(ip, PORT_IME) {
-            // 再 APP
+            log("IME 失败，尝试 APP")
             connectPreferWifiThenDirect(ip, PORT_APP, null)
         }
     }
 
     private fun connectPreferWifiThenDirect(ip: String, port: Int, onFail: (() -> Unit)? = null) {
-        // 先走 Wi‑Fi 网络（尽量绕过 VPN）
         connectViaWifi(ip, port) {
-            // Wi‑Fi 不可用或失败 → 普通直连
+            log("Wi‑Fi 指定网络失败/不可用，切换普通直连：$ip:$port")
             connectDirect(ip, port, onFail)
         }
     }
 
     // —— 指定 Wi‑Fi 的连接（尽量绕过 VPN） ——
     private fun connectViaWifi(ip: String, port: Int, onFail: (() -> Unit)? = null) {
-        val cm = connectivityManager ?: return onFail?.invoke().let { Unit }
-
+        val cm = connectivityManager ?: run { onFail?.invoke(); return }
         val req = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
 
         wifiCallback?.let { safeUnregister(cm, it) }
-
         wifiCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 lastNetwork = network
                 scope.launch {
+                    log("Wi‑Fi 网络可用，尝试在 Wi‑Fi 上连接：$ip:$port")
                     val ok = tryConnectWithNetwork(network, ip, port)
                     if (!ok) onFail?.invoke()
                     wifiCallback?.let { safeUnregister(cm, it) }
                 }
             }
-
             override fun onUnavailable() {
+                log("Wi‑Fi 网络不可用")
                 onFail?.invoke()
             }
         }
@@ -180,41 +198,40 @@ class InputSenderActivity : AppCompatActivity() {
                     wifiCallback?.let { safeUnregister(cm, it) }
                 }
             }
-            tvConnectionStatus.text = "Wi‑Fi 连接请求中：$ip:$port"
-        } catch (_: Exception) {
+            log("已发出 Wi‑Fi 连接请求：$ip:$port")
+        } catch (e: Exception) {
+            log("Wi‑Fi 请求失败：${e.message}", e)
             onFail?.invoke()
         }
     }
 
     // —— 普通直连（作为回退） ——
     private fun connectDirect(ip: String, port: Int, onFail: (() -> Unit)? = null) {
-        tvConnectionStatus.text = "直连中：$ip:$port"
+        log("普通直连：$ip:$port")
         scope.launch {
-            val ok = try {
+            try {
                 val s = Socket()
                 s.connect(InetSocketAddress(ip, port), CONNECTION_TIMEOUT)
                 onConnectedSocket(s, ip, port)
-                true
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                log("普通直连失败：${e.message}", e)
                 onFail?.invoke()
-                false
             }
         }
     }
 
-    // —— 在指定 Network 上建 socket —— 
     private fun tryConnectWithNetwork(network: Network, ip: String, port: Int): Boolean {
         return try {
             val s = network.socketFactory.createSocket()
             s.connect(InetSocketAddress(ip, port), CONNECTION_TIMEOUT)
             onConnectedSocket(s, ip, port)
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            log("在 Wi‑Fi 网络上连接失败：${e.message}", e)
             false
         }
     }
 
-    // 统一处理连接成功后的动作
     private fun onConnectedSocket(s: Socket, ip: String, port: Int) {
         when (port) {
             PORT_IME -> {
@@ -226,10 +243,10 @@ class InputSenderActivity : AppCompatActivity() {
                     btnConnect.text = "断开"
                 }
                 lastText = etInput.text?.toString() ?: ""
-                // 同时尝试建立 APP 通道，形成反向链路（只需一边点连接）
-                ensureAppClientChannel(ip)
+                log("IME 渠道建立成功，开始监听对端数据")
+                ensureAppClientChannel(ip) // 建 APP 反向
                 listenIncoming(s)
-                sendReqConnectFrame()
+                sendReqConnectFrame()      // 广播握手帧
             }
             PORT_APP -> {
                 socketAppClient = s
@@ -238,6 +255,7 @@ class InputSenderActivity : AppCompatActivity() {
                     tvConnectionStatus.text = "APP 已连接：$ip:$port"
                     btnConnect.text = "断开"
                 }
+                log("APP 渠道建立成功，开始监听对端数据")
                 listenIncoming(s)
                 sendReqConnectFrame()
             }
@@ -249,7 +267,7 @@ class InputSenderActivity : AppCompatActivity() {
         if (wifiCallback === cb) wifiCallback = null
     }
 
-    // 建立到对方 APP(10001) 的客户端通道（反向发送），便于对方不点连接也能双向发
+    // 建立到对方 APP(10001) 的客户端通道（反向发送）
     private fun ensureAppClientChannel(ip: String) {
         if (socketAppClient?.isConnected == true) return
         val net = lastNetwork
@@ -259,10 +277,11 @@ class InputSenderActivity : AppCompatActivity() {
                 s.connect(InetSocketAddress(ip, PORT_APP), CONNECTION_TIMEOUT)
                 socketAppClient = s
                 writerAppClient = PrintWriter(s.getOutputStream(), true)
+                log("已补建 APP 反向通道")
                 listenIncoming(s)
                 sendReqConnectFrame()
-            } catch (_: Exception) {
-                // 对方没开 APP 也无妨，仍可通过 IME 正常输入
+            } catch (e: Exception) {
+                log("APP 反向通道建立失败（对方未开应用接收？）：${e.message}")
             }
         }
     }
@@ -276,32 +295,38 @@ class InputSenderActivity : AppCompatActivity() {
                 while (reader.readLine().also { line = it } != null) {
                     val msg = line!!
                     if (msg.startsWith("$REQ_CONNECT:")) {
+                        log("收到握手帧: $msg")
                         handleReqConnect(msg)
                     } else {
+                        log("收到数据帧: ${msg.take(64)}")
                         applyRemoteMessage(msg)
                     }
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                log("监听对端数据异常：${e.message}", e)
+            }
         }
     }
 
-    // 把我的 IP 广播给所有通道（IME/APP/被动接入），避免只发给 IME 被忽略
+    // 广播我的 IP 到所有通道（避免只发 IME 被忽略）
     private fun sendReqConnectFrame() {
         if (reqConnectSent) return
-        val myIp = getLocalIpAddress() ?: return
+        val myIp = getLocalIpAddress() ?: run { log("发送握手帧失败：本机IP为空"); return }
         val frame = "$REQ_CONNECT:$myIp:$PORT_APP"
-        // 广播到所有可用输出通道
-        listOfNotNull(writerIme, writerAppClient, serverAcceptedWriter).forEach { it.println(frame) }
+        var count = 0
+        listOfNotNull(writerIme, writerAppClient, serverAcceptedWriter).forEach {
+            it.println(frame); count++
+        }
+        log("握手帧广播完成，通道数=$count, 内容=$frame")
         reqConnectSent = true
     }
 
-    // 对端发来的回连请求：只填 IP 输入框并自动回连（先 IME，再 APP），不写进文本框
+    // 对端发来的回连请求：填 IP 输入框并自动回连（先 IME，再 APP）
     private fun handleReqConnect(msg: String) {
         val parts = msg.split(":")
         if (parts.size < 2) return
         val ip = parts[1]
         val port = parts.getOrNull(2)?.toIntOrNull()
-
         runOnUiThread {
             etServerIp.setText(ip)
             tvConnectionStatus.text = "收到回连请求：$ip${if (port != null) ":$port" else ""}"
@@ -310,7 +335,8 @@ class InputSenderActivity : AppCompatActivity() {
 
         if (!autoConnectTriggered && (writerIme == null && writerAppClient == null)) {
             autoConnectTriggered = true
-            connectSequence(ip) // 再走一遍 IME→APP 的标准流程（带 Wi‑Fi 优先）
+            log("执行自动回连流程：$ip")
+            connectSequence(ip)
         }
     }
 
@@ -338,9 +364,11 @@ class InputSenderActivity : AppCompatActivity() {
         scope.launch {
             try {
                 val serverSocket = ServerSocket(PORT_APP)
+                log("本机 APP 接收服务器已启动：$PORT_APP")
                 while (isActive) {
                     val client = serverSocket.accept()
                     serverAcceptedWriter = PrintWriter(client.getOutputStream(), true)
+                    log("有对端连入到本机 APP：${client.inetAddress?.hostAddress}:${client.port}")
                     launch {
                         try {
                             val reader = BufferedReader(InputStreamReader(client.getInputStream(), "UTF-8"))
@@ -348,18 +376,25 @@ class InputSenderActivity : AppCompatActivity() {
                             while (reader.readLine().also { line = it } != null) {
                                 val msg = line!!
                                 if (msg.startsWith("$REQ_CONNECT:")) {
+                                    log("本机 APP 收到握手帧: $msg")
                                     handleReqConnect(msg)
                                 } else {
+                                    log("本机 APP 收到数据帧: ${msg.take(64)}")
                                     applyRemoteMessage(msg)
                                 }
                             }
-                        } catch (_: Exception) { } finally {
+                        } catch (e: Exception) {
+                            log("本机 APP 接收通道异常：${e.message}", e)
+                        } finally {
                             try { client.close() } catch (_: Exception) {}
+                            log("本机 APP 接收通道关闭")
                             serverAcceptedWriter = null
                         }
                     }
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                log("APP 接收服务器启动失败：${e.message}", e)
+            }
         }
     }
 
@@ -377,6 +412,7 @@ class InputSenderActivity : AppCompatActivity() {
                 tvConnectionStatus.text = "未连接"
                 btnConnect.text = "连接"
             }
+            log("所有通道已断开，状态已重置")
         }
     }
 
@@ -409,6 +445,10 @@ class InputSenderActivity : AppCompatActivity() {
 
     // 广播一条消息到所有可用通道
     private fun broadcast(message: String) {
-        listOfNotNull(writerIme, writerAppClient, serverAcceptedWriter).forEach { it.println(message) }
+        var count = 0
+        listOfNotNull(writerIme, writerAppClient, serverAcceptedWriter).forEach {
+            it.println(message); count++
+        }
+        log("广播消息: '${message.take(64)}' 到通道数=$count")
     }
 }
