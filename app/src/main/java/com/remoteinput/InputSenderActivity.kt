@@ -1,6 +1,8 @@
 // 文件: app/src/main/java/com/remoteinput/InputSenderActivity.kt
 package com.remoteinput
 
+import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -9,6 +11,10 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -22,19 +28,29 @@ class InputSenderActivity : AppCompatActivity() {
     private lateinit var tvConnectionStatus: TextView
     private lateinit var etInput: EditText
 
-    // 主动连接（可能连 IME:9999 或 APP:10001）
+    // 主动连接（IME:9999 / APP:10001）
     private var socketIme: Socket? = null
     private var writerIme: PrintWriter? = null
     private var socketAppClient: Socket? = null
     private var writerAppClient: PrintWriter? = null
 
-    // 被动接入（对方连到本机 APP:10001）
+    // 被动接入（对方连到我 APP:10001）
     private var serverAcceptedWriter: PrintWriter? = null
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var lastText = ""
     private var updatingFromRemote = false
     private var isConnected = false
+
+    // Wi‑Fi 指定网络
+    private var connectivityManager: ConnectivityManager? = null
+    private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastNetwork: Network? = null
+
+    // 记住上次 IP / 自动重连
+    private val prefs by lazy { getSharedPreferences("remote_input", Context.MODE_PRIVATE) }
+    private val PREF_LAST_IP = "last_ip"
+    private val AUTO_CONNECT_ON_START = true
 
     // 握手/自动回连控制
     private var reqConnectSent = false
@@ -45,9 +61,8 @@ class InputSenderActivity : AppCompatActivity() {
         const val PORT_APP = 10001
         const val CONNECTION_TIMEOUT = 10_000 // ms
 
-        // 协议帧
         private const val REQ_CONNECT = "REQ_CONNECT"   // REQ_CONNECT:<ip>[:port]
-        private const val TEXT = "TEXT"                 // TEXT:<content>
+        private const val TEXT = "TEXT"
         private const val BACKSPACE = "BACKSPACE"
         private const val CLEAR = "CLEAR"
     }
@@ -61,8 +76,21 @@ class InputSenderActivity : AppCompatActivity() {
         tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
         etInput = findViewById(R.id.etInput)
 
-        // 启动本机 APP 接收服务器（对端无需点连接也能互相发/握手）
+        connectivityManager = getSystemService(ConnectivityManager::class.java)
+
+        // 本机 APP 接收服务器（对端无需点连接也能互相发/握手）
         startAppReceiverServer()
+
+        // 记住上次 IP + 可选自动重连
+        prefs.getString(PREF_LAST_IP, null)?.let { last ->
+            if (last.isNotBlank()) {
+                etServerIp.setText(last)
+                if (AUTO_CONNECT_ON_START) {
+                    // 避免 UI 还没起来，稍微延迟一下
+                    etServerIp.post { connectSequence(last) }
+                }
+            }
+        }
 
         btnConnect.setOnClickListener {
             if (!isConnected && writerAppClient == null && writerIme == null) {
@@ -70,8 +98,8 @@ class InputSenderActivity : AppCompatActivity() {
                 if (ip.isEmpty()) {
                     Toast.makeText(this, "请输入对方IP", Toast.LENGTH_SHORT).show()
                 } else {
-                    // 直接连接（恢复之前稳定的直连方式）
-                    connectDirectSequence(ip)
+                    prefs.edit().putString(PREF_LAST_IP, ip).apply()
+                    connectSequence(ip)
                 }
             } else {
                 disconnectAll()
@@ -87,13 +115,8 @@ class InputSenderActivity : AppCompatActivity() {
                 scope.launch {
                     val delta = currentText.length - lastText.length
                     when {
-                        delta > 0 -> {
-                            val add = currentText.substring(lastText.length)
-                            outWriter()?.println("$TEXT:$add")
-                        }
-                        delta < 0 -> {
-                            repeat(-delta) { outWriter()?.println(BACKSPACE) }
-                        }
+                        delta > 0 -> broadcast("$TEXT:${currentText.substring(lastText.length)}")
+                        delta < 0 -> repeat(-delta) { broadcast(BACKSPACE) }
                     }
                     lastText = currentText
                 }
@@ -101,68 +124,145 @@ class InputSenderActivity : AppCompatActivity() {
         })
     }
 
-    // 一键直连顺序：先 IME(9999)，失败再 APP(10001)
-    private fun connectDirectSequence(ip: String) {
-        connectDirect(ip, PORT_IME) {
-            connectDirect(ip, PORT_APP, null)
+    // 首选：Wi‑Fi 指定网络 → 失败再回落普通直连；顺序：IME → APP
+    private fun connectSequence(ip: String) {
+        tvConnectionStatus.text = "准备连接：$ip"
+        // 优先 IME
+        connectPreferWifiThenDirect(ip, PORT_IME) {
+            // 再 APP
+            connectPreferWifiThenDirect(ip, PORT_APP, null)
         }
     }
 
-    // 直连（不再依赖 requestNetwork/自动发现）
+    private fun connectPreferWifiThenDirect(ip: String, port: Int, onFail: (() -> Unit)? = null) {
+        // 先走 Wi‑Fi 网络（尽量绕过 VPN）
+        connectViaWifi(ip, port) {
+            // Wi‑Fi 不可用或失败 → 普通直连
+            connectDirect(ip, port, onFail)
+        }
+    }
+
+    // —— 指定 Wi‑Fi 的连接（尽量绕过 VPN） ——
+    private fun connectViaWifi(ip: String, port: Int, onFail: (() -> Unit)? = null) {
+        val cm = connectivityManager ?: return onFail?.invoke().let { Unit }
+
+        val req = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        wifiCallback?.let { safeUnregister(cm, it) }
+
+        wifiCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                lastNetwork = network
+                scope.launch {
+                    val ok = tryConnectWithNetwork(network, ip, port)
+                    if (!ok) onFail?.invoke()
+                    wifiCallback?.let { safeUnregister(cm, it) }
+                }
+            }
+
+            override fun onUnavailable() {
+                onFail?.invoke()
+            }
+        }
+
+        try {
+            val cb = wifiCallback as ConnectivityManager.NetworkCallback
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
+            } else {
+                cm.requestNetwork(req, cb)
+                scope.launch {
+                    delay(CONNECTION_TIMEOUT.toLong())
+                    onFail?.invoke()
+                    wifiCallback?.let { safeUnregister(cm, it) }
+                }
+            }
+            tvConnectionStatus.text = "Wi‑Fi 连接请求中：$ip:$port"
+        } catch (_: Exception) {
+            onFail?.invoke()
+        }
+    }
+
+    // —— 普通直连（作为回退） ——
     private fun connectDirect(ip: String, port: Int, onFail: (() -> Unit)? = null) {
-        runOnUiThread { tvConnectionStatus.text = "直连中：$ip:$port" }
+        tvConnectionStatus.text = "直连中：$ip:$port"
         scope.launch {
-            try {
+            val ok = try {
                 val s = Socket()
                 s.connect(InetSocketAddress(ip, port), CONNECTION_TIMEOUT)
-                when (port) {
-                    PORT_IME -> {
-                        socketIme = s
-                        writerIme = PrintWriter(s.getOutputStream(), true)
-                        isConnected = true
-                        withContext(Dispatchers.Main) {
-                            tvConnectionStatus.text = "IME 已连接：$ip:$port"
-                            btnConnect.text = "断开"
-                        }
-                        // 建立到对方 APP 的反向通道（只需一边点连接）
-                        ensureAppClientChannel(ip)
-                        listenIncoming(s)
-                        sendReqConnectFrame()
-                    }
-                    PORT_APP -> {
-                        socketAppClient = s
-                        writerAppClient = PrintWriter(s.getOutputStream(), true)
-                        withContext(Dispatchers.Main) {
-                            tvConnectionStatus.text = "APP 已连接：$ip:$port"
-                            btnConnect.text = "断开"
-                        }
-                        listenIncoming(s)
-                        sendReqConnectFrame()
-                    }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接失败: ${e.message}" }
+                onConnectedSocket(s, ip, port)
+                true
+            } catch (_: Exception) {
                 onFail?.invoke()
+                false
             }
         }
     }
 
-    // 选择一个可用的发送通道：IME优先，其次APP客户端，其次被动接入
-    private fun outWriter(): PrintWriter? = writerIme ?: writerAppClient ?: serverAcceptedWriter
+    // —— 在指定 Network 上建 socket —— 
+    private fun tryConnectWithNetwork(network: Network, ip: String, port: Int): Boolean {
+        return try {
+            val s = network.socketFactory.createSocket()
+            s.connect(InetSocketAddress(ip, port), CONNECTION_TIMEOUT)
+            onConnectedSocket(s, ip, port)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // 统一处理连接成功后的动作
+    private fun onConnectedSocket(s: Socket, ip: String, port: Int) {
+        when (port) {
+            PORT_IME -> {
+                socketIme = s
+                writerIme = PrintWriter(s.getOutputStream(), true)
+                isConnected = true
+                runOnUiThread {
+                    tvConnectionStatus.text = "IME 已连接：$ip:$port"
+                    btnConnect.text = "断开"
+                }
+                lastText = etInput.text?.toString() ?: ""
+                // 同时尝试建立 APP 通道，形成反向链路（只需一边点连接）
+                ensureAppClientChannel(ip)
+                listenIncoming(s)
+                sendReqConnectFrame()
+            }
+            PORT_APP -> {
+                socketAppClient = s
+                writerAppClient = PrintWriter(s.getOutputStream(), true)
+                runOnUiThread {
+                    tvConnectionStatus.text = "APP 已连接：$ip:$port"
+                    btnConnect.text = "断开"
+                }
+                listenIncoming(s)
+                sendReqConnectFrame()
+            }
+        }
+    }
+
+    private fun safeUnregister(cm: ConnectivityManager, cb: ConnectivityManager.NetworkCallback?) {
+        try { if (cb != null) cm.unregisterNetworkCallback(cb) } catch (_: Exception) {}
+        if (wifiCallback === cb) wifiCallback = null
+    }
 
     // 建立到对方 APP(10001) 的客户端通道（反向发送），便于对方不点连接也能双向发
     private fun ensureAppClientChannel(ip: String) {
         if (socketAppClient?.isConnected == true) return
+        val net = lastNetwork
         scope.launch {
             try {
-                val s = Socket()
+                val s = (net?.socketFactory?.createSocket() ?: Socket())
                 s.connect(InetSocketAddress(ip, PORT_APP), CONNECTION_TIMEOUT)
                 socketAppClient = s
                 writerAppClient = PrintWriter(s.getOutputStream(), true)
                 listenIncoming(s)
                 sendReqConnectFrame()
             } catch (_: Exception) {
-                // 对方没开APP也无妨，仍可通过 IME 正常输入
+                // 对方没开 APP 也无妨，仍可通过 IME 正常输入
             }
         }
     }
@@ -176,26 +276,27 @@ class InputSenderActivity : AppCompatActivity() {
                 while (reader.readLine().also { line = it } != null) {
                     val msg = line!!
                     if (msg.startsWith("$REQ_CONNECT:")) {
-                        handleReqConnect(msg)    // 不显示在输入框
+                        handleReqConnect(msg)
                     } else {
-                        applyRemoteMessage(msg)  // 文本/退格等显示在输入框
+                        applyRemoteMessage(msg)
                     }
                 }
             } catch (_: Exception) { }
         }
     }
 
-    // 发送连接请求帧：REQ_CONNECT:<myIp>[:port]，对方自动填 IP 框并回连
+    // 把我的 IP 广播给所有通道（IME/APP/被动接入），避免只发给 IME 被忽略
     private fun sendReqConnectFrame() {
         if (reqConnectSent) return
         val myIp = getLocalIpAddress() ?: return
-        outWriter()?.println("$REQ_CONNECT:$myIp:$PORT_APP")
+        val frame = "$REQ_CONNECT:$myIp:$PORT_APP"
+        // 广播到所有可用输出通道
+        listOfNotNull(writerIme, writerAppClient, serverAcceptedWriter).forEach { it.println(frame) }
         reqConnectSent = true
     }
 
-    // 处理对端发来的连接请求：填充IP输入框并自动回连（先 IME，再 APP）
+    // 对端发来的回连请求：只填 IP 输入框并自动回连（先 IME，再 APP），不写进文本框
     private fun handleReqConnect(msg: String) {
-        // REQ_CONNECT:<ip>[:port]
         val parts = msg.split(":")
         if (parts.size < 2) return
         val ip = parts[1]
@@ -205,12 +306,11 @@ class InputSenderActivity : AppCompatActivity() {
             etServerIp.setText(ip)
             tvConnectionStatus.text = "收到回连请求：$ip${if (port != null) ":$port" else ""}"
         }
+        prefs.edit().putString(PREF_LAST_IP, ip).apply()
 
         if (!autoConnectTriggered && (writerIme == null && writerAppClient == null)) {
             autoConnectTriggered = true
-            connectDirect(ip, PORT_IME) {
-                connectDirect(ip, port ?: PORT_APP, null)
-            }
+            connectSequence(ip) // 再走一遍 IME→APP 的标准流程（带 Wi‑Fi 优先）
         }
     }
 
@@ -241,7 +341,6 @@ class InputSenderActivity : AppCompatActivity() {
                 while (isActive) {
                     val client = serverSocket.accept()
                     serverAcceptedWriter = PrintWriter(client.getOutputStream(), true)
-                    // 读入对方发送内容并渲染
                     launch {
                         try {
                             val reader = BufferedReader(InputStreamReader(client.getInputStream(), "UTF-8"))
@@ -306,5 +405,10 @@ class InputSenderActivity : AppCompatActivity() {
             }
             null
         } catch (_: Exception) { null }
+    }
+
+    // 广播一条消息到所有可用通道
+    private fun broadcast(message: String) {
+        listOfNotNull(writerIme, writerAppClient, serverAcceptedWriter).forEach { it.println(message) }
     }
 }
