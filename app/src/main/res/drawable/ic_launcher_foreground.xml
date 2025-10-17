@@ -2,8 +2,11 @@
 <!-- 文件: app/src/main/res/drawable/ic_launcher_foreground.xml -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
-    android:viewportWidth="24" android:viewportHeight="24">
-    <!-- 常用“编辑铅笔”图标 -->
-    <path android:fillColor="#FFFFFF"
-        android:pathData="M3,17.25V21h3.75l11-11 -3.75,-3.75 -11,11zM20.71,7.04c0.39,-0.39 0.39,-1.02 0,-1.41l-2.34,-2.34c-0.39,-0.39 -1.02,-0.39 -1.41,0l-1.83,1.83 3.75,3.75 1.83,-1.83z"/>
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 前景图标居中缩放到安全区域（72x72），避免裁剪 -->
+    <group android:scaleX="3" android:scaleY="3" android:translateX="18" android:translateY="18">
+        <!-- 常用“编辑铅笔”图标（常见公共图标风格） -->
+        <path android:fillColor="#FFFFFF"
+            android:pathData="M3,17.25V21h3.75l11-11 -3.75,-3.75 -11,11zM20.71,7.04c0.39,-0.39 0.39,-1.02 0,-1.41l-2.34,-2.34c-0.39,-0.39 -1.02,-0.39 -1.41,0l-1.83,1.83 3.75,3.75 1.83,-1.83z"/>
+    </group>
 </vector>

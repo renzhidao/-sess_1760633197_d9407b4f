@@ -41,15 +41,25 @@ class InputSenderActivity : AppCompatActivity() {
     private var updatingFromRemote = false
     private var isConnected = false
 
-    // 强制走 Wi‑Fi
+    // Wi‑Fi 指定网络
     private var connectivityManager: ConnectivityManager? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var lastNetwork: Network? = null
+
+    // 握手/自动回连控制
+    private var reqConnectSent = false
+    private var autoConnectTriggered = false
 
     companion object {
         const val PORT_IME = 9999
         const val PORT_APP = 10001
         const val CONNECTION_TIMEOUT = 10_000 // ms
+
+        // 协议帧
+        private const val REQ_CONNECT = "REQ_CONNECT"   // REQ_CONNECT:<ip>[:port]
+        private const val TEXT = "TEXT"                 // TEXT:<content>
+        private const val BACKSPACE = "BACKSPACE"
+        private const val CLEAR = "CLEAR"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,11 +73,11 @@ class InputSenderActivity : AppCompatActivity() {
 
         connectivityManager = getSystemService(ConnectivityManager::class.java)
 
-        // 启动本机 APP 接收服务器（对方无需点连接也能互相发）
+        // 启动本机 APP 接收服务器（对端无需点连接也能互相发/握手）
         startAppReceiverServer()
 
         btnConnect.setOnClickListener {
-            if (!isConnected) {
+            if (!isConnected && writerAppClient == null && writerIme == null) {
                 val ip = etServerIp.text.toString().trim()
                 if (ip.isEmpty()) {
                     Toast.makeText(this, "请输入对方IP", Toast.LENGTH_SHORT).show()
@@ -94,10 +104,10 @@ class InputSenderActivity : AppCompatActivity() {
                     when {
                         delta > 0 -> {
                             val add = currentText.substring(lastText.length)
-                            outWriter()?.println("TEXT:$add")
+                            outWriter()?.println("$TEXT:$add")
                         }
                         delta < 0 -> {
-                            repeat(-delta) { outWriter()?.println("BACKSPACE") }
+                            repeat(-delta) { outWriter()?.println(BACKSPACE) }
                         }
                     }
                     lastText = currentText
@@ -122,7 +132,6 @@ class InputSenderActivity : AppCompatActivity() {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
 
-        // 清理旧回调
         wifiCallback?.let { safeUnregister(cm, it) }
 
         wifiCallback = object : ConnectivityManager.NetworkCallback() {
@@ -143,10 +152,10 @@ class InputSenderActivity : AppCompatActivity() {
                                 }
                                 // 建立到对方 APP 的通道，形成反向链路（只需一边点连接）
                                 ensureAppClientChannel(ip)
-                                // 监听对方发来的内容（IME一般不回，但兼容）
+                                // 监听来自对方的数据（IME端一般不回，但兼容）
                                 listenIncoming(s)
-                                // 可选发送本机IP
-                                sendHelloFrames()
+                                // 发送带类型的连接请求（对方自动填入IP框并回连）
+                                sendReqConnectFrame()
                             }
                             PORT_APP -> {
                                 socketAppClient = s
@@ -156,7 +165,7 @@ class InputSenderActivity : AppCompatActivity() {
                                     btnConnect.text = "断开"
                                 }
                                 listenIncoming(s)
-                                sendHelloFrames()
+                                sendReqConnectFrame()
                             }
                         }
                     } catch (e: SecurityException) {
@@ -166,7 +175,9 @@ class InputSenderActivity : AppCompatActivity() {
                         }
                         onFail?.invoke()
                     } catch (e: Exception) {
-                        withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接失败: ${e.message}" }
+                        withContext(Dispatchers.Main) {
+                            tvConnectionStatus.text = "连接失败: ${e.message}"
+                        }
                         onFail?.invoke()
                     } finally {
                         wifiCallback?.let { safeUnregister(cm, it) }
@@ -184,10 +195,11 @@ class InputSenderActivity : AppCompatActivity() {
         }
 
         try {
+            val cb = wifiCallback as ConnectivityManager.NetworkCallback
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                cm.requestNetwork(req, wifiCallback as ConnectivityManager.NetworkCallback, CONNECTION_TIMEOUT)
+                cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
             } else {
-                cm.requestNetwork(req, wifiCallback as ConnectivityManager.NetworkCallback)
+                cm.requestNetwork(req, cb)
                 scope.launch {
                     delay(CONNECTION_TIMEOUT.toLong())
                     if (!isConnected && writerAppClient == null && writerIme == null) {
@@ -207,25 +219,25 @@ class InputSenderActivity : AppCompatActivity() {
         if (wifiCallback === cb) wifiCallback = null
     }
 
-    // 建立到对方 APP(10001) 的客户端通道，便于对方不点连接也能双向发
+    // 建立到对方 APP(10001) 的客户端通道（反向发送），便于对方不点连接也能双向发
     private fun ensureAppClientChannel(ip: String) {
         if (socketAppClient?.isConnected == true) return
         val net = lastNetwork
         scope.launch {
             try {
-                val s = net?.socketFactory?.createSocket() ?: Socket()
+                val s = (net?.socketFactory?.createSocket() ?: Socket())
                 s.connect(InetSocketAddress(ip, PORT_APP), CONNECTION_TIMEOUT)
                 socketAppClient = s
                 writerAppClient = PrintWriter(s.getOutputStream(), true)
                 listenIncoming(s)
-                sendHelloFrames()
+                sendReqConnectFrame()
             } catch (_: Exception) {
-                // 对方没开APP也无妨，仍能通过IME侧正常输入
+                // 对方没开APP也无妨，仍可通过 IME 正常输入
             }
         }
     }
 
-    // 监听来自对方的消息（无论IME或APP）
+    // 监听来自对方的消息（IME或APP）
     private fun listenIncoming(sock: Socket) {
         scope.launch {
             try {
@@ -233,42 +245,68 @@ class InputSenderActivity : AppCompatActivity() {
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
                     val msg = line!!
-                    if (msg.startsWith("HELLO_FROM:")) {
-                        // 可解析对方IP，当前策略不强制使用
-                        continue
+                    if (msg.startsWith("$REQ_CONNECT:")) {
+                        handleReqConnect(msg)    // 不显示在输入框
+                    } else {
+                        applyRemoteMessage(msg)  // 文本/退格等显示在输入框
                     }
-                    applyRemoteMessage(msg)
                 }
             } catch (_: Exception) { }
         }
     }
 
-    // 可选：把我的IP发给对端（对端无需再手点连接）
-    private fun sendHelloFrames() {
+    // 发送连接请求帧：REQ_CONNECT:<myIp>[:port]
+    private fun sendReqConnectFrame() {
+        if (reqConnectSent) return
         val myIp = getLocalIpAddress() ?: return
-        outWriter()?.println("HELLO_FROM:$myIp:$PORT_APP")
+        outWriter()?.println("$REQ_CONNECT:$myIp:$PORT_APP")
+        reqConnectSent = true
+    }
+
+    // 处理对端发来的连接请求：填充IP输入框并自动回连（先尝试 IME，再 APP）
+    private fun handleReqConnect(msg: String) {
+        // REQ_CONNECT:<ip>[:port]
+        val parts = msg.split(":")
+        if (parts.size < 2) return
+        val ip = parts[1]
+        // 可选端口
+        val port = parts.getOrNull(2)?.toIntOrNull()
+
+        runOnUiThread {
+            // 显示在 IP 框，不显示在输入框
+            etServerIp.setText(ip)
+            tvConnectionStatus.text = "收到回连请求：$ip${if (port != null) ":$port" else ""}"
+        }
+
+        if (!autoConnectTriggered && (writerIme == null && writerAppClient == null)) {
+            autoConnectTriggered = true
+            // 先尝试回连对方 IME，再尝试 APP
+            connectViaWifi(ip, PORT_IME) {
+                connectViaWifi(ip, port ?: PORT_APP, null)
+            }
+        }
     }
 
     private suspend fun applyRemoteMessage(message: String) {
         withContext(Dispatchers.Main) {
             updatingFromRemote = true
             when {
-                message.startsWith("TEXT:") -> {
-                    val text = message.removePrefix("TEXT:")
+                message.startsWith("$TEXT:") -> {
+                    val text = message.removePrefix("$TEXT:")
                     etInput.text?.insert(etInput.selectionStart.coerceAtLeast(0), text)
                 }
-                message == "BACKSPACE" -> {
+                message == BACKSPACE -> {
                     val start = etInput.selectionStart
                     if (start > 0) etInput.text?.delete(start - 1, start)
                 }
-                message == "CLEAR" -> etInput.setText("")
+                message == CLEAR -> etInput.setText("")
             }
             lastText = etInput.text?.toString() ?: ""
             updatingFromRemote = false
         }
     }
 
-    // 本机 APP 接收服务器（对端无需点连接也能互相发）
+    // 本机 APP 接收服务器（对端无需点连接也能互相发/握手）
     private fun startAppReceiverServer() {
         scope.launch {
             try {
@@ -283,10 +321,11 @@ class InputSenderActivity : AppCompatActivity() {
                             var line: String?
                             while (reader.readLine().also { line = it } != null) {
                                 val msg = line!!
-                                if (msg.startsWith("HELLO_FROM:")) {
-                                    continue
+                                if (msg.startsWith("$REQ_CONNECT:")) {
+                                    handleReqConnect(msg)
+                                } else {
+                                    applyRemoteMessage(msg)
                                 }
-                                applyRemoteMessage(msg)
                             }
                         } catch (_: Exception) { } finally {
                             try { client.close() } catch (_: Exception) {}
@@ -305,6 +344,8 @@ class InputSenderActivity : AppCompatActivity() {
             writerIme = null; socketIme = null
             writerAppClient = null; socketAppClient = null
             serverAcceptedWriter = null
+            reqConnectSent = false
+            autoConnectTriggered = false
             withContext(Dispatchers.Main) {
                 isConnected = false
                 tvConnectionStatus.text = "未连接"
@@ -330,6 +371,7 @@ class InputSenderActivity : AppCompatActivity() {
                     val a = addrs.nextElement()
                     if (!a.isLoopbackAddress && a is Inet4Address) {
                         val ip = a.hostAddress ?: continue
+                        // 私网网段
                         if (ip.startsWith("192.168.") || ip.startsWith("10.") ||
                             ip.matches(Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\..*"))
                         ) return ip
