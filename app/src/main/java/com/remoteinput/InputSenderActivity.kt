@@ -2,7 +2,6 @@
 package com.remoteinput
 
 import android.content.Context
-import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -11,10 +10,6 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -44,15 +39,10 @@ class InputSenderActivity : AppCompatActivity() {
     private var updatingFromRemote = false
     private var isConnected = false
 
-    // Wi‑Fi 指定网络
-    private var connectivityManager: ConnectivityManager? = null
-    private var wifiCallback: ConnectivityManager.NetworkCallback? = null
-    private var lastNetwork: Network? = null
-
-    // 记住上次 IP / 自动重连
+    // 记住上次 IP（不开启自动连接）
     private val prefs by lazy { getSharedPreferences("remote_input", Context.MODE_PRIVATE) }
     private val PREF_LAST_IP = "last_ip"
-    private val AUTO_CONNECT_ON_START = true
+    private val AUTO_CONNECT_ON_START = false // 重要：不自动连接，避免闪退
 
     // 握手/自动回连控制
     private var reqConnectSent = false
@@ -74,21 +64,16 @@ class InputSenderActivity : AppCompatActivity() {
         setContentView(R.layout.activity_input_sender)
 
         etServerIp = findViewById(R.id.etServerIp)
-        btnConnect = findViewById(R.id.btnConnect)
+        btnConnect  = findViewById(R.id.btnConnect)
         tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
         etInput = findViewById(R.id.etInput)
-
-        connectivityManager = getSystemService(ConnectivityManager::class.java)
 
         // 启动本机 APP 接收服务器（对端无需点连接也能互相发/握手）
         startAppReceiverServer()
 
-        // 记住上次 IP + 可选自动重连
+        // 记住上次 IP（仅填充，不自动连接）
         prefs.getString(PREF_LAST_IP, null)?.let { last ->
-            if (last.isNotBlank()) {
-                etServerIp.setText(last)
-                if (AUTO_CONNECT_ON_START) etServerIp.post { connectSequence(last) }
-            }
+            if (last.isNotBlank()) etServerIp.setText(last)
         }
 
         btnConnect.setOnClickListener {
@@ -106,8 +91,8 @@ class InputSenderActivity : AppCompatActivity() {
         }
 
         etInput.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) { }
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 if (updatingFromRemote) return
                 val currentText = s?.toString() ?: ""
@@ -123,83 +108,27 @@ class InputSenderActivity : AppCompatActivity() {
         })
     }
 
-    // 连通策略：先 Wi‑Fi 指定网络（绕 VPN），失败再普通直连；顺序 IME→APP
+    // 连接顺序：IME（9999）→ APP（10001），纯直连，避免任何 Wi‑Fi 绑定导致的 EPERM
     private fun connectSequence(ip: String) {
         tvConnectionStatus.text = "连接中：$ip"
-        connectPreferWifiThenDirect(ip, PORT_IME) {
+        connectDirect(ip, PORT_IME) {
             tvConnectionStatus.text = "IME失败，尝试APP…"
-            connectPreferWifiThenDirect(ip, PORT_APP, null)
+            connectDirect(ip, PORT_APP, null)
         }
     }
 
-    private fun connectPreferWifiThenDirect(ip: String, port: Int, onFail: (() -> Unit)? = null) {
-        connectViaWifi(ip, port) {
-            connectDirect(ip, port, onFail)
-        }
-    }
-
-    // —— 指定 Wi‑Fi 的连接（尽量绕过 VPN） ——
-    private fun connectViaWifi(ip: String, port: Int, onFail: (() -> Unit)? = null) {
-        val cm = connectivityManager ?: return onFail?.invoke().let { Unit }
-        val req = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-
-        wifiCallback?.let { safeUnregister(cm, it) }
-        wifiCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                lastNetwork = network
-                scope.launch {
-                    val ok = tryConnectWithNetwork(network, ip, port)
-                    if (!ok) onFail?.invoke()
-                    wifiCallback?.let { safeUnregister(cm, it) }
-                }
-            }
-            override fun onUnavailable() { onFail?.invoke() }
-        }
-
-        try {
-            val cb = wifiCallback as ConnectivityManager.NetworkCallback
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
-            } else {
-                cm.requestNetwork(req, cb)
-                scope.launch {
-                    delay(CONNECTION_TIMEOUT.toLong())
-                    onFail?.invoke()
-                    wifiCallback?.let { safeUnregister(cm, it) }
-                }
-            }
-            tvConnectionStatus.text = "请求 Wi‑Fi 网络…"
-        } catch (_: Exception) {
-            onFail?.invoke()
-        }
-    }
-
-    // —— 普通直连（作为回退） ——
+    // 纯直连（稳定、简单，不触发 EPERM）
     private fun connectDirect(ip: String, port: Int, onFail: (() -> Unit)? = null) {
         scope.launch {
             try {
                 val s = Socket()
                 s.tcpNoDelay = true
+                s.keepAlive = true
                 s.connect(InetSocketAddress(ip, port), CONNECTION_TIMEOUT)
                 onConnectedSocket(s, ip, port)
             } catch (_: Exception) {
                 onFail?.invoke()
             }
-        }
-    }
-
-    private fun tryConnectWithNetwork(network: Network, ip: String, port: Int): Boolean {
-        return try {
-            val s = network.socketFactory.createSocket()
-            s.tcpNoDelay = true
-            s.connect(InetSocketAddress(ip, port), CONNECTION_TIMEOUT)
-            onConnectedSocket(s, ip, port)
-            true
-        } catch (_: Exception) {
-            false
         }
     }
 
@@ -231,25 +160,22 @@ class InputSenderActivity : AppCompatActivity() {
         }
     }
 
-    private fun safeUnregister(cm: ConnectivityManager, cb: ConnectivityManager.NetworkCallback?) {
-        try { if (cb != null) cm.unregisterNetworkCallback(cb) } catch (_: Exception) { }
-        if (wifiCallback === cb) wifiCallback = null
-    }
-
-    // 建立到对方 APP(10001) 的客户端通道（反向发送）
+    // 补建到对方 APP(10001) 的客户端通道，便于对方不点连接也能双向发
     private fun ensureAppClientChannel(ip: String) {
         if (socketAppClient?.isConnected == true) return
-        val net = lastNetwork
         scope.launch {
             try {
-                val s = (net?.socketFactory?.createSocket() ?: Socket())
+                val s = Socket()
                 s.tcpNoDelay = true
+                s.keepAlive = true
                 s.connect(InetSocketAddress(ip, PORT_APP), CONNECTION_TIMEOUT)
                 socketAppClient = s
                 writerAppClient = PrintWriter(s.getOutputStream(), true)
                 listenIncoming(s)
                 sendReqConnectFrame()
-            } catch (_: Exception) { }
+            } catch (_: Exception) {
+                // 对方没开 APP 接收也无妨，仍可通过 IME 正常输入
+            }
         }
     }
 
@@ -282,13 +208,14 @@ class InputSenderActivity : AppCompatActivity() {
 
     // 对端发来的回连请求：填 IP 输入框并自动回连（先 IME，再 APP）
     private fun handleReqConnect(msg: String) {
+        // REQ_CONNECT:<ip>[:port]
         val parts = msg.split(":")
         if (parts.size < 2) return
         val ip = parts[1]
         val port = parts.getOrNull(2)?.toIntOrNull()
 
         runOnUiThread {
-            etServerIp.setText(ip)
+            etServerIp.setText(ip) // 显示在 IP 框，不写入文本框
             tvConnectionStatus.text = "收到回连请求：$ip${if (port != null) ":$port" else ""}"
         }
         prefs.edit().putString(PREF_LAST_IP, ip).apply()
@@ -323,7 +250,8 @@ class InputSenderActivity : AppCompatActivity() {
         appServerJob?.cancel()
         appServerJob = scope.launch {
             try {
-                appServerSocket?.close()
+                // 防止端口占用导致崩溃
+                try { appServerSocket?.close() } catch (_: Exception) {}
                 appServerSocket = ServerSocket(PORT_APP)
                 while (isActive) {
                     val client = appServerSocket!!.accept()
@@ -341,20 +269,20 @@ class InputSenderActivity : AppCompatActivity() {
                                 }
                             }
                         } catch (_: Exception) { } finally {
-                            try { client.close() } catch (_: Exception) { }
+                            try { client.close() } catch (_: Exception) {}
                             serverAcceptedWriter = null
                         }
                     }
                 }
-            } catch (_: Exception) { }
+            } catch (_: Exception) { /* 端口占用时不崩溃，静默失败即可 */ }
         }
     }
 
     private fun disconnectAll() {
         scope.launch {
-            try { writerIme?.close(); socketIme?.close() } catch (_: Exception) { }
-            try { writerAppClient?.close(); socketAppClient?.close() } catch (_: Exception) { }
-            try { appServerSocket?.close() } catch (_: Exception) { }
+            try { writerIme?.close(); socketIme?.close() } catch (_: Exception) {}
+            try { writerAppClient?.close(); socketAppClient?.close() } catch (_: Exception) {}
+            try { appServerSocket?.close() } catch (_: Exception) {}
             appServerJob?.cancel()
             writerIme = null; socketIme = null
             writerAppClient = null; socketAppClient = null
@@ -397,6 +325,7 @@ class InputSenderActivity : AppCompatActivity() {
         } catch (_: Exception) { null }
     }
 
+    // 同时发给 IME / APP / 被动接入（有哪个通道就用哪个）
     private fun broadcast(message: String) {
         listOfNotNull(writerIme, writerAppClient, serverAcceptedWriter).forEach { it.println(message) }
     }
