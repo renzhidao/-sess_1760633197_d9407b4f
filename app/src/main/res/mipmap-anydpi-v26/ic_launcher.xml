@@ -3,4 +3,5 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_bg"/>
     <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+    <!-- 不加 monochrome，避免某些桌面强制单色裁剪 -->
 </adaptive-icon>

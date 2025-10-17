@@ -3,9 +3,9 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <!-- 背景色 -->
+    <!-- 背景 -->
     <path android:fillColor="#1565C0" android:pathData="M0,0h108v108h-108z"/>
-    <!-- 前景图标居中 72x72 -->
+    <!-- 前景中央72x72 -->
     <group android:scaleX="3" android:scaleY="3" android:translateX="18" android:translateY="18">
         <path android:fillColor="#FFFFFF"
             android:pathData="M3,17.25V21h3.75l11-11 -3.75,-3.75 -11,11zM20.71,7.04c0.39,-0.39 0.39,-1.02 0,-1.41l-2.34,-2.34c-0.39,-0.39 -1.02,-0.39 -1.41,0l-1.83,1.83 3.75,3.75 1.83,-1.83z"/>
