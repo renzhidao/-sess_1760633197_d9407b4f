@@ -27,11 +27,10 @@ class RemoteIME : InputMethodService() {
             hub = binder.getService()
             hub?.registerImeSink(imeSink)
             hub?.setImeActive(true)
-            statusTextView?.text = "远程输入法 - 就绪（不需重连）"
+            statusTextView?.text = "远程输入法 - 就绪"
         }
         override fun onServiceDisconnected(name: ComponentName?) {
-            hub?.registerImeSink(null)
-            hub = null
+            hub?.registerImeSink(null); hub = null
         }
     }
 
@@ -46,17 +45,12 @@ class RemoteIME : InputMethodService() {
         bindService(intent, conn, Context.BIND_AUTO_CREATE)
         return v
     }
-
     override fun onFinishInputView(finishingInput: Boolean) {
-        super.onFinishInputView(finishingInput)
-        hub?.setImeActive(false)
+        super.onFinishInputView(finishingInput); hub?.setImeActive(false)
     }
-
     override fun onStartInputView(attribute: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
-        super.onStartInputView(attribute, restarting)
-        hub?.setImeActive(true)
+        super.onStartInputView(attribute, restarting); hub?.setImeActive(true)
     }
-
     override fun onDestroy() {
         super.onDestroy()
         try { hub?.registerImeSink(null) } catch (_: Exception) {}

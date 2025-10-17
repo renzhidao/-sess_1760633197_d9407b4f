@@ -52,11 +52,6 @@ class InputSenderActivity : AppCompatActivity() {
                 updatingFromRemote = false
             }
         }
-        override fun onHandshake(ip: String) {
-            scope.launch {
-                if (etServerIp.text.toString().trim() != ip) etServerIp.setText(ip)
-            }
-        }
         override fun onConnectionState(state: String) {
             scope.launch { tvConnectionStatus.text = state }
         }
@@ -68,11 +63,10 @@ class InputSenderActivity : AppCompatActivity() {
             val binder = service as SocketHubService.LocalBinder
             hub = binder.getService()
             hub?.registerAppSink(appSink)
-            tvConnectionStatus.text = "已就绪（持续连接）"
+            tvConnectionStatus.text = "已就绪（单端口、持久连接）"
         }
         override fun onServiceDisconnected(name: ComponentName?) {
-            hub?.registerAppSink(null)
-            hub = null
+            hub?.registerAppSink(null); hub = null
         }
     }
 
@@ -93,18 +87,15 @@ class InputSenderActivity : AppCompatActivity() {
 
         btnConnect.setOnClickListener {
             val ip = etServerIp.text.toString().trim()
-            if (ip.isEmpty()) {
-                Toast.makeText(this, "请输入对方IP", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
+            if (ip.isEmpty()) { Toast.makeText(this, "请输入对方IP", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
             prefs.edit().putString(PREF_LAST_IP, ip).apply()
             tvConnectionStatus.text = "连接中：$ip"
-            hub?.connectBoth(ip)
+            hub?.connect(ip)
         }
 
         etInput.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) { }
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 if (updatingFromRemote) return
                 val current = s?.toString() ?: ""
