@@ -19,7 +19,7 @@ class RemoteIME : InputMethodService() {
     private var serverJob: Job? = null
     private var statusTextView: TextView? = null
 
-    // NSD 服务注册
+    // NSD 服务注册（输入法服务：_remoteime._tcp. -> 9999）
     private var nsdManager: NsdManager? = null
     private var nsdRegListener: NsdManager.RegistrationListener? = null
 
@@ -72,10 +72,10 @@ class RemoteIME : InputMethodService() {
         when {
             command.startsWith("TEXT:") -> ic.commitText(command.removePrefix("TEXT:"), 1)
             command == "BACKSPACE" -> ic.deleteSurroundingText(1, 0)
+            command == "CLEAR" -> ic.deleteSurroundingText(1000, 1000)
         }
     }
 
-    // —— NSD 注册/反注册 ——
     private fun registerNsdService(port: Int) {
         nsdManager = getSystemService(NsdManager::class.java)
         val serviceInfo = NsdServiceInfo().apply {
