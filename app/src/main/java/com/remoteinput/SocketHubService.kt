@@ -1,31 +1,36 @@
-// 文件: app/src/main/java/com/remoteinput/SocketHubService.kt
+// header
 package com.remoteinput
 
 import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.util.Base64
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.io.PrintWriter
-import java.net.*
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
+import java.nio.charset.StandardCharsets
 
 class SocketHubService : Service() {
 
     companion object {
         const val PORT = 10000
-        private const val STATE = "STATE"   // STATE:IME_ACTIVE / STATE:IME_INACTIVE
-        private const val TEXT = "TEXT"     // TEXT:<payload>
+        private const val STATE = "STATE"        // STATE:IME_ACTIVE / STATE:IME_INACTIVE
+        private const val TEXT_B64 = "TEXTB64"   // TEXTB64:<base64 payload>
         private const val BACKSPACE = "BACKSPACE"
         private const val CLEAR = "CLEAR"
     }
 
-    // 协程
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    // 本机接收器（IME落地/App落地）
     interface ImeSink {
         fun onText(text: String)
         fun onBackspace()
@@ -39,15 +44,15 @@ class SocketHubService : Service() {
         fun onConnectionState(state: String)
         fun isActive(): Boolean
     }
+
     private var imeSink: ImeSink? = null
     private var appSink: AppSink? = null
 
-    // 远端 IME 活跃状态（用于出站路由时可扩展；当前只按本地落地）
+    // 远端/本地 IME 状态
     private var remoteImeActive = false
-    // 本机 IME 活跃状态（用于入站落地）
     private var localImeActive = false
 
-    // 单会话
+    // 单会话（不做多连接，避免互抢）
     private var serverJob: Job? = null
     private var serverSocket: ServerSocket? = null
     private var sessionSocket: Socket? = null
@@ -61,25 +66,26 @@ class SocketHubService : Service() {
         super.onCreate()
         startServer()
     }
+
     override fun onDestroy() {
         super.onDestroy()
         closeSession()
         stopServer()
-        ioScope.cancel(); mainScope.cancel()
+        ioScope.cancel()
+        mainScope.cancel()
     }
 
-    // 对外API
     fun registerImeSink(sink: ImeSink?) { imeSink = sink }
     fun registerAppSink(sink: AppSink?) { appSink = sink }
+
     fun setImeActive(active: Boolean) {
         localImeActive = active
-        // 同步我方 IME 状态给对端（可选）
+        // 同步本地 IME 状态给对端
         sendFrame("$STATE:${if (active) "IME_ACTIVE" else "IME_INACTIVE"}")
     }
 
-    // 单击连接：一次拨号建立单会话；对端只需打开 App/IME 让 Service run 即可
+    // 拨号建立单会话；被动接入由 startServer 处理
     fun connect(ip: String) {
-        if (isSelfIp(ip)) { notifyState("目标IP是本机IP"); return }
         ioScope.launch {
             try {
                 val s = Socket()
@@ -87,14 +93,15 @@ class SocketHubService : Service() {
                 s.keepAlive = true
                 s.connect(InetSocketAddress(ip, PORT), 10_000)
                 adoptSession(s, "出站")
-                notifyState("已连接：$ip:$PORT")
-                // 同步本地 IME 状态给对端（首包）
+                notifyState("已连接：${ip}:${PORT}")
+                // 首包同步我方 IME 状态
                 sendFrame("$STATE:${if (localImeActive) "IME_ACTIVE" else "IME_INACTIVE"}")
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 notifyState("连接失败")
             }
         }
     }
+
     fun disconnect() {
         ioScope.launch {
             closeSession()
@@ -102,11 +109,15 @@ class SocketHubService : Service() {
         }
     }
 
-    fun sendText(text: String) = sendFrame("$TEXT:$text")
+    // 发送 API（Base64，避免换行/控制字符问题）
+    fun sendText(text: String) {
+        val b64 = Base64.encodeToString(text.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
+        sendFrame("$TEXT_B64:$b64")
+    }
     fun sendBackspace() = sendFrame(BACKSPACE)
     fun sendClear() = sendFrame(CLEAR)
 
-    // 服务器：常驻、只一份，不随 IME/Activity 销毁
+    // 服务器常驻（单连接）
     private fun startServer() {
         if (serverJob?.isActive == true) return
         serverJob = ioScope.launch {
@@ -117,8 +128,8 @@ class SocketHubService : Service() {
                 while (isActive) {
                     val client = serverSocket!!.accept()
                     adoptSession(client, "入站")
-                    notifyState("已连接：${client.inetAddress?.hostAddress}:$PORT")
-                    // 同步我方 IME 状态给对端（首包）
+                    notifyState("已连接：${client.inetAddress?.hostAddress}:${PORT}")
+                    // 首包同步我方 IME 状态
                     sendFrame("$STATE:${if (localImeActive) "IME_ACTIVE" else "IME_INACTIVE"}")
                 }
             } catch (_: Exception) {
@@ -132,14 +143,16 @@ class SocketHubService : Service() {
         serverJob?.cancel(); serverJob = null
     }
 
-    // 采用会话：有旧会话则关掉，避免重连风暴
     private fun adoptSession(sock: Socket, tag: String) {
         closeSession()
-        sessionSocket = sock
-        sessionWriter = PrintWriter(sock.getOutputStream(), true)
+        sessionSocket = sock.apply {
+            tcpNoDelay = true
+            keepAlive = true
+        }
+        sessionWriter = PrintWriter(OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8), true)
         readJob = ioScope.launch {
             try {
-                val reader = BufferedReader(InputStreamReader(sock.getInputStream(), "UTF-8"))
+                val reader = BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8))
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
                     dispatchIncoming(line!!)
@@ -160,26 +173,36 @@ class SocketHubService : Service() {
     }
 
     private fun sendFrame(frame: String) {
-        try { sessionWriter?.println(frame) } catch (_: Exception) { notifyState("发送失败") }
+        val w = sessionWriter ?: return
+        w.println(frame)
+        if (w.checkError()) {
+            notifyState("发送失败")
+            closeSession()
+        }
     }
+
     private fun dispatchIncoming(frame: String) {
         when {
             frame.startsWith("$STATE:") -> {
                 remoteImeActive = frame.endsWith("IME_ACTIVE")
             }
-            frame.startsWith("$TEXT:") -> {
-                val payload = frame.removePrefix("$TEXT:")
+            frame.startsWith("$TEXT_B64:") -> {
+                val b64 = frame.removePrefix("$TEXT_B64:")
+                val text = try {
+                    String(Base64.decode(b64, Base64.NO_WRAP), StandardCharsets.UTF_8)
+                } catch (_: Exception) { "" }
+                if (text.isEmpty()) return
                 mainScope.launch {
-                    if (imeSink?.isActive() == true) imeSink?.onText(payload)
-                    else appSink?.onText(payload)
+                    if (localImeActive && imeSink != null) imeSink?.onText(text)
+                    else appSink?.onText(text)
                 }
             }
             frame == BACKSPACE -> mainScope.launch {
-                if (imeSink?.isActive() == true) imeSink?.onBackspace()
+                if (localImeActive && imeSink != null) imeSink?.onBackspace()
                 else appSink?.onBackspace()
             }
             frame == CLEAR -> mainScope.launch {
-                if (imeSink?.isActive() == true) imeSink?.onClear()
+                if (localImeActive && imeSink != null) imeSink?.onClear()
                 else appSink?.onClear()
             }
         }
@@ -189,6 +212,7 @@ class SocketHubService : Service() {
         mainScope.launch { appSink?.onConnectionState(state) }
     }
 
+    @Suppress("unused")
     private fun isSelfIp(ip: String): Boolean = getLocalIpAddress() == ip
     private fun getLocalIpAddress(): String? {
         return try {

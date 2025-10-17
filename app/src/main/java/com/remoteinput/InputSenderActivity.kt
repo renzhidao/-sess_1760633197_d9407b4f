@@ -1,4 +1,4 @@
-// 文件: app/src/main/java/com/remoteinput/InputSenderActivity.kt
+// header
 package com.remoteinput
 
 import android.content.*
@@ -20,6 +20,7 @@ class InputSenderActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var updatingFromRemote = false
     private var lastText = ""
+    private var connected = false
 
     private val prefs by lazy { getSharedPreferences("remote_input", Context.MODE_PRIVATE) }
     private val PREF_LAST_IP = "last_ip"
@@ -53,7 +54,11 @@ class InputSenderActivity : AppCompatActivity() {
             }
         }
         override fun onConnectionState(state: String) {
-            scope.launch { tvConnectionStatus.text = state }
+            scope.launch {
+                tvConnectionStatus.text = state
+                connected = state.startsWith("已连接")
+                btnConnect.text = if (connected) getString(R.string.disconnect) else getString(R.string.connect)
+            }
         }
         override fun isActive(): Boolean = true
     }
@@ -66,7 +71,8 @@ class InputSenderActivity : AppCompatActivity() {
             tvConnectionStatus.text = "已就绪（单端口、持久连接）"
         }
         override fun onServiceDisconnected(name: ComponentName?) {
-            hub?.registerAppSink(null); hub = null
+            try { hub?.registerAppSink(null) } catch (_: Exception) {}
+            hub = null
         }
     }
 
@@ -79,6 +85,7 @@ class InputSenderActivity : AppCompatActivity() {
         tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
         etInput = findViewById(R.id.etInput)
 
+        // 启动并绑定服务（常驻）
         val intent = Intent(this, SocketHubService::class.java)
         startService(intent)
         bindService(intent, conn, Context.BIND_AUTO_CREATE)
@@ -87,25 +94,28 @@ class InputSenderActivity : AppCompatActivity() {
 
         btnConnect.setOnClickListener {
             val ip = etServerIp.text.toString().trim()
-            if (ip.isEmpty()) { Toast.makeText(this, "请输入对方IP", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
-            prefs.edit().putString(PREF_LAST_IP, ip).apply()
-            tvConnectionStatus.text = "连接中：$ip"
-            hub?.connect(ip)
+            if (!connected) {
+                if (ip.isEmpty()) { Toast.makeText(this, "请输入对方IP", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                prefs.edit().putString(PREF_LAST_IP, ip).apply()
+                tvConnectionStatus.text = "连接中：$ip"
+                hub?.connect(ip)
+            } else {
+                hub?.disconnect()
+            }
         }
 
+        // 精确差分：支持中间插入/替换/删除
         etInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) {
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 if (updatingFromRemote) return
-                val current = s?.toString() ?: ""
-                val delta = current.length - lastText.length
-                when {
-                    delta > 0 -> hub?.sendText(current.substring(lastText.length))
-                    delta < 0 -> repeat(-delta) { hub?.sendBackspace() }
+                if (before > 0) repeat(before) { hub?.sendBackspace() }
+                if (count > 0 && s != null) {
+                    val inserted = s.subSequence(start, start + count).toString()
+                    if (inserted.isNotEmpty()) hub?.sendText(inserted)
                 }
-                lastText = current
             }
+            override fun afterTextChanged(s: Editable?) { lastText = s?.toString() ?: "" }
         })
     }
 

@@ -1,4 +1,4 @@
-// 文件: app/src/main/java/com/remoteinput/RemoteIME.kt
+// header
 package com.remoteinput
 
 import android.content.*
@@ -30,7 +30,8 @@ class RemoteIME : InputMethodService() {
             statusTextView?.text = "远程输入法 - 就绪"
         }
         override fun onServiceDisconnected(name: ComponentName?) {
-            hub?.registerImeSink(null); hub = null
+            try { hub?.registerImeSink(null) } catch (_: Exception) {}
+            hub = null
         }
     }
 
@@ -45,12 +46,19 @@ class RemoteIME : InputMethodService() {
         bindService(intent, conn, Context.BIND_AUTO_CREATE)
         return v
     }
-    override fun onFinishInputView(finishingInput: Boolean) {
-        super.onFinishInputView(finishingInput); hub?.setImeActive(false)
-    }
+
     override fun onStartInputView(attribute: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
-        super.onStartInputView(attribute, restarting); hub?.setImeActive(true)
+        super.onStartInputView(attribute, restarting)
+        hub?.setImeActive(true)
+        statusTextView?.text = "远程输入法 - 活跃"
     }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+        hub?.setImeActive(false)
+        statusTextView?.text = "远程输入法 - 非活跃"
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         try { hub?.registerImeSink(null) } catch (_: Exception) {}
