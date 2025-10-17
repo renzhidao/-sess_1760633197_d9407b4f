@@ -6,8 +6,6 @@ import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.TextView
-import android.net.nsd.NsdManager
-import android.net.nsd.NsdServiceInfo
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -19,16 +17,11 @@ class RemoteIME : InputMethodService() {
     private var serverJob: Job? = null
     private var statusTextView: TextView? = null
 
-    // NSD 服务注册（输入法服务：_remoteime._tcp. -> 9999）
-    private var nsdManager: NsdManager? = null
-    private var nsdRegListener: NsdManager.RegistrationListener? = null
-
     override fun onCreateInputView(): View {
         val keyboardView = layoutInflater.inflate(R.layout.keyboard_view, null)
         statusTextView = keyboardView.findViewById(R.id.tvStatus)
 
-        val switchButton: Button = keyboardView.findViewById(R.id.btnSwitchIme)
-        switchButton.setOnClickListener {
+        keyboardView.findViewById<Button>(R.id.btnSwitchIme).setOnClickListener {
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
         }
 
@@ -41,10 +34,7 @@ class RemoteIME : InputMethodService() {
         serverJob = scope.launch {
             try {
                 val serverSocket = ServerSocket(9999)
-                withContext(Dispatchers.Main) {
-                    statusTextView?.text = "等待连接..."
-                    registerNsdService(9999)
-                }
+                withContext(Dispatchers.Main) { statusTextView?.text = "等待连接..." }
 
                 while (currentCoroutineContext().isActive) {
                     val client = serverSocket.accept()
@@ -73,41 +63,12 @@ class RemoteIME : InputMethodService() {
             command.startsWith("TEXT:") -> ic.commitText(command.removePrefix("TEXT:"), 1)
             command == "BACKSPACE" -> ic.deleteSurroundingText(1, 0)
             command == "CLEAR" -> ic.deleteSurroundingText(1000, 1000)
-        }
-    }
-
-    private fun registerNsdService(port: Int) {
-        nsdManager = getSystemService(NsdManager::class.java)
-        val serviceInfo = NsdServiceInfo().apply {
-            serviceName = "RemoteIME-${android.os.Build.MODEL}"
-            serviceType = "_remoteime._tcp."
-            this.port = port
-        }
-        nsdRegListener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(info: NsdServiceInfo) {}
-            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {}
-            override fun onServiceUnregistered(info: NsdServiceInfo) {}
-            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {}
-        }
-        try {
-            nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, nsdRegListener)
-        } catch (_: Exception) {
-            // 某些设备可能禁用 NSD，不影响核心功能
-        }
-    }
-
-    private fun unregisterNsdService() {
-        try {
-            nsdRegListener?.let { nsdManager?.unregisterService(it) }
-        } catch (_: Exception) {
-        } finally {
-            nsdRegListener = null
+            else -> { /* 忽略未知控制帧 */ }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterNsdService()
         serverJob?.cancel()
         scope.cancel()
     }
