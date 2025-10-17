@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 文件: app/src/main/res/drawable/ic_launcher_foreground.xml -->
+<!-- 文件: app/src/main/res/mipmap/ic_launcher.xml -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="24" android:viewportHeight="24">
+    <!-- 背景 -->
+    <path android:fillColor="#3F51B5" android:pathData="M0,0h24v24h-24z"/>
     <!-- Google Material Icons: baseline keyboard（Apache-2.0） -->
     <path
         android:fillColor="#FFFFFF"

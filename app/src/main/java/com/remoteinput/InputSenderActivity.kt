@@ -31,8 +31,8 @@ class InputSenderActivity : AppCompatActivity() {
     private lateinit var tvConnectionStatus: TextView
     private lateinit var etInput: EditText
 
-    private var socket: Socket? = null
-    private var writer: PrintWriter? = null
+    private var socket: Socket? = null                  // 主动连接的客户端 socket（用于发送）
+    private var writer: PrintWriter? = null             // 主动连接的输出
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var lastText = ""
     private var isConnected = false
@@ -48,14 +48,15 @@ class InputSenderActivity : AppCompatActivity() {
     private var discoveryAppListener: NsdManager.DiscoveryListener? = null
     private var connectedOnce = false
 
-    // 应用侧接收服务（当对方不是输入法，也能把输入接过来）
+    // 应用侧接收服务（当对方不是输入法，或只开 App 时也能收）
     private var appServerJob: Job? = null
     private var appServerSocket: ServerSocket? = null
     private var appRegListener: NsdManager.RegistrationListener? = null
+    private var serverAcceptedWriter: PrintWriter? = null   // 有人连到本机 10001 时，向对方发送的 writer
 
     companion object {
-        const val SERVER_PORT_IME = 9999          // 对方作为输入法时监听的端口
-        const val SERVER_PORT_APP = 10001         // 对方作为应用接收时监听的端口
+        const val SERVER_PORT_IME = 9999          // 对方作为输入法时监听
+        const val SERVER_PORT_APP = 10001         // 对方作为应用接收时监听
         const val CONNECTION_TIMEOUT = 10_000     // ms
 
         private const val NSD_TYPE_IME = "_remoteime._tcp."
@@ -74,7 +75,7 @@ class InputSenderActivity : AppCompatActivity() {
         connectivityManager = getSystemService(ConnectivityManager::class.java)
         nsdManager = getSystemService(NsdManager::class.java)
 
-        // 启动应用侧接收服务器 + NSD 注册（允许对方直接把输入发送到本机应用）
+        // 启动本机应用接收服务并注册 NSD：无需对方点“连接”，一旦对方连上即可双向
         startAppReceiverServerAndRegister()
 
         btnConnect.setOnClickListener {
@@ -84,8 +85,8 @@ class InputSenderActivity : AppCompatActivity() {
                     tvConnectionStatus.text = "正在自动发现设备…"
                     startNsdDiscoveryDual()
                 } else {
-                    // 优先尝试连对方作为输入法的 9999，否则连应用 10001
-                    connectViaWifi(ip, SERVER_PORT_IME) { // onFail fallback
+                    // 优先连 IME（9999），失败再连 APP（10001）
+                    connectViaWifi(ip, SERVER_PORT_IME) {
                         connectViaWifi(ip, SERVER_PORT_APP, null)
                     }
                 }
@@ -98,14 +99,23 @@ class InputSenderActivity : AppCompatActivity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                if (!isConnected || updatingFromRemote) return
+                if (updatingFromRemote) return
                 val currentText = s?.toString() ?: ""
                 scope.launch {
-                    if (currentText.length > lastText.length) {
-                        writer?.println("TEXT:${currentText.substring(lastText.length)}")
-                    } else if (currentText.length < lastText.length) {
-                        val del = lastText.length - currentText.length
-                        if (del == 1) writer?.println("BACKSPACE") else repeat(del) { writer?.println("BACKSPACE") }
+                    val deltaAdd = currentText.length - lastText.length
+                    when {
+                        deltaAdd > 0 -> {
+                            val add = currentText.substring(lastText.length)
+                            // 优先用主动连接发送；如果没有，则用服务器被动接入的 writer（对方连上就有）
+                            (writer ?: serverAcceptedWriter)?.println("TEXT:$add")
+                        }
+                        deltaAdd < 0 -> {
+                            val del = -deltaAdd
+                            val out = (writer ?: serverAcceptedWriter)
+                            if (out != null) {
+                                repeat(del) { out.println("BACKSPACE") }
+                            }
+                        }
                     }
                     lastText = currentText
                 }
@@ -115,11 +125,10 @@ class InputSenderActivity : AppCompatActivity() {
 
     // —— 强制走 Wi‑Fi 的连接逻辑（绕过多数 VPN 路由） ——
     private fun connectViaWifi(ip: String, port: Int, onFail: (() -> Unit)? = null) {
-        tvConnectionStatus.text = "连接中（Wi‑Fi $ip:$port）…"
+        tvConnectionStatus.text = "连接中（$ip:$port，经 Wi‑Fi）…"
         val cm = connectivityManager ?: run {
             tvConnectionStatus.text = "系统不支持 ConnectivityManager"
-            onFail?.invoke()
-            return
+            onFail?.invoke(); return
         }
 
         val req = NetworkRequest.Builder()
@@ -139,28 +148,29 @@ class InputSenderActivity : AppCompatActivity() {
                         writer = PrintWriter(s.getOutputStream(), true)
                         isConnected = true
                         withContext(Dispatchers.Main) {
-                            tvConnectionStatus.text = "已连接到: $ip:$port"
+                            tvConnectionStatus.text = "已连接: $ip:$port"
                             btnConnect.text = "断开"
                             etInput.isEnabled = true
                         }
                         stopNsd()
                         safeUnregisterCurrent(cm)
 
-                        // 客户端连接也开启读入循环，实现真正双向
+                        // 主动连接建立后，建立反向 APP 通道用于对方发送到我（只在连 IME 时启用）
+                        if (port == SERVER_PORT_IME) {
+                            ensureReverseAppChannel(ip)
+                        }
+
+                        // 客户端连接也开启读入循环，实现双向
                         listenClientIncoming(s)
                     } catch (e: SecurityException) {
                         withContext(Dispatchers.Main) {
                             tvConnectionStatus.text = "无权限（需 CHANGE_NETWORK_STATE）"
                             Toast.makeText(this@InputSenderActivity, "缺少网络变更权限", Toast.LENGTH_LONG).show()
                         }
-                        safeUnregisterCurrent(cm)
-                        onFail?.invoke()
+                        safeUnregisterCurrent(cm); onFail?.invoke()
                     } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            tvConnectionStatus.text = "连接失败: ${e.message}"
-                        }
-                        safeUnregisterCurrent(cm)
-                        onFail?.invoke()
+                        withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接失败: ${e.message}" }
+                        safeUnregisterCurrent(cm); onFail?.invoke()
                     }
                 }
             }
@@ -170,31 +180,41 @@ class InputSenderActivity : AppCompatActivity() {
                     tvConnectionStatus.text = "Wi‑Fi 网络不可用"
                     Toast.makeText(this@InputSenderActivity, "Wi‑Fi 不可用/被VPN限制", Toast.LENGTH_SHORT).show()
                 }
-                safeUnregisterCurrent(cm)
-                onFail?.invoke()
+                safeUnregisterCurrent(cm); onFail?.invoke()
             }
         }
 
         try {
-            wifiCallback?.let { callback ->
+            wifiCallback?.let { cb ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    cm.requestNetwork(req, callback, CONNECTION_TIMEOUT)
+                    cm.requestNetwork(req, cb, CONNECTION_TIMEOUT)
                 } else {
-                    cm.requestNetwork(req, callback)
+                    cm.requestNetwork(req, cb)
                     scope.launch {
                         delay(CONNECTION_TIMEOUT.toLong())
                         if (!isConnected) {
                             withContext(Dispatchers.Main) { tvConnectionStatus.text = "连接超时" }
-                            safeUnregisterCurrent(cm)
-                            onFail?.invoke()
+                            safeUnregisterCurrent(cm); onFail?.invoke()
                         }
                     }
                 }
             }
         } catch (e: Exception) {
             tvConnectionStatus.text = "请求 Wi‑Fi 失败: ${e.message}"
-            safeUnregisterCurrent(cm)
-            onFail?.invoke()
+            safeUnregisterCurrent(cm); onFail?.invoke()
+        }
+    }
+
+    // 连接对方 APP 接收端（10001），作为反向通道；这样只有一方点连接也能双向发
+    private fun ensureReverseAppChannel(ip: String) {
+        scope.launch {
+            try {
+                val s = Socket(ip, SERVER_PORT_APP)
+                // 只读入对方从 APP 端发来的消息
+                listenClientIncoming(s)
+            } catch (_: Exception) {
+                // 对方没开 APP 接收端也无妨
+            }
         }
     }
 
@@ -213,12 +233,8 @@ class InputSenderActivity : AppCompatActivity() {
 
     private fun safeUnregisterCurrent(cm: ConnectivityManager) {
         val cb = wifiCallback ?: return
-        try {
-            cm.unregisterNetworkCallback(cb)
-        } catch (_: Exception) {
-        } finally {
-            if (wifiCallback === cb) wifiCallback = null
-        }
+        try { cm.unregisterNetworkCallback(cb) } catch (_: Exception) {}
+        finally { if (wifiCallback === cb) wifiCallback = null }
     }
 
     // —— NSD 自动发现：同时发现 IME(9999) 与 APP(10001)，谁先解析成功连谁 ——
@@ -226,31 +242,24 @@ class InputSenderActivity : AppCompatActivity() {
         connectedOnce = false
         stopNsd()
 
-        fun makeResolveListener(expectedType: String) = object : NsdManager.ResolveListener {
-            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                // 解析失败，另一路会继续
-            }
+        fun makeResolveListener() = object : NsdManager.ResolveListener {
+            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
                 if (connectedOnce) return
                 val host = serviceInfo.host?.hostAddress ?: return
                 val port = serviceInfo.port
                 connectedOnce = true
-                runOnUiThread { tvConnectionStatus.text = "发现设备：$host:$port，连接中…" }
+                runOnUiThread { tvConnectionStatus.text = "发现：$host:$port，连接中…" }
                 stopNsd()
                 connectViaWifi(host, port, null)
             }
         }
 
-        val resolveIme = makeResolveListener(NSD_TYPE_IME)
-        val resolveApp = makeResolveListener(NSD_TYPE_APP)
+        val resolve = makeResolveListener()
 
         discoveryImeListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {}
-            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                // 过滤自身
-                if (serviceInfo.serviceName?.startsWith("RemoteApp-") == true) return
-                nsdManager?.resolveService(serviceInfo, resolveIme)
-            }
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) { nsdManager?.resolveService(serviceInfo, resolve) }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
             override fun onDiscoveryStopped(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) { stopNsd() }
@@ -259,11 +268,7 @@ class InputSenderActivity : AppCompatActivity() {
 
         discoveryAppListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {}
-            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                // 过滤自身
-                if (serviceInfo.serviceName?.startsWith("RemoteApp-") == true) return
-                nsdManager?.resolveService(serviceInfo, resolveApp)
-            }
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) { nsdManager?.resolveService(serviceInfo, resolve) }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
             override fun onDiscoveryStopped(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) { stopNsd() }
@@ -281,7 +286,7 @@ class InputSenderActivity : AppCompatActivity() {
         discoveryAppListener = null
     }
 
-    // —— 应用侧接收：开启本地 Server(10001) 并注册 NSD 服务，让对方可直连 ——
+    // —— 应用侧接收：开启本地 Server(10001) 并注册 NSD 服务，让对方可直连；同时保留对接入端的 writer，实现反向发送 ——
     private fun startAppReceiverServerAndRegister() {
         // 启动本地接收服务器
         appServerJob?.cancel()
@@ -291,7 +296,9 @@ class InputSenderActivity : AppCompatActivity() {
                 appServerSocket = ServerSocket(SERVER_PORT_APP)
                 while (isActive) {
                     val client = appServerSocket!!.accept()
-                    // 来一个连一个读
+                    // 保存给接入端的输出，用于本端输入时向对方发送（对方无需点击连接）
+                    serverAcceptedWriter = PrintWriter(client.getOutputStream(), true)
+                    // 读入对方发来的内容，渲染到本地输入框
                     launch {
                         try {
                             val reader = BufferedReader(InputStreamReader(client.getInputStream(), "UTF-8"))
@@ -302,6 +309,7 @@ class InputSenderActivity : AppCompatActivity() {
                         } catch (_: Exception) {
                         } finally {
                             try { client.close() } catch (_: Exception) {}
+                            serverAcceptedWriter = null
                         }
                     }
                 }
@@ -336,9 +344,7 @@ class InputSenderActivity : AppCompatActivity() {
                     val start = etInput.selectionStart
                     if (start > 0) etInput.text?.delete(start - 1, start)
                 }
-                message == "CLEAR" -> {
-                    etInput.setText("")
-                }
+                message == "CLEAR" -> etInput.setText("")
             }
             lastText = etInput.text?.toString() ?: ""
             updatingFromRemote = false
@@ -352,15 +358,13 @@ class InputSenderActivity : AppCompatActivity() {
         appServerJob?.cancel()
         try { appServerSocket?.close() } catch (_: Exception) {}
         appServerSocket = null
+        serverAcceptedWriter = null
     }
 
     private fun disconnect() {
         scope.launch {
-            try {
-                writer?.close()
-                socket?.close()
-            } catch (_: Exception) {
-            } finally {
+            try { writer?.close(); socket?.close() } catch (_: Exception) {}
+            finally {
                 socket = null
                 writer = null
                 isConnected = false
